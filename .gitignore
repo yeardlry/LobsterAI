@@ -54,3 +54,5 @@ sandbox/
 openspec/
 .superpowers/
 .diagram/
+vendor/ccbt-runtime/
+.ccbt-cache/

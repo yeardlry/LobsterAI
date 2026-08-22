@@ -2993,6 +2993,31 @@ describe('OpenClawConfigSync runtime config output', () => {
       },
     });
   });
+
+  test('writes streamable-http remote MCP server with canonical transport', async () => {
+    const sync = await createSync({
+      getResolvedMcpServers: () => [{
+        name: 'Streamable MCP',
+        transportType: 'streamable-http',
+        url: 'https://mcp.example.com/stream',
+        headers: {
+          Authorization: 'Bearer canonical-token',
+        },
+      }],
+    });
+
+    const result = sync.sync('mcp-server-canonical');
+
+    expect(result.ok).toBe(true);
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    expect(config.mcp.servers['Streamable MCP']).toMatchObject({
+      url: 'https://mcp.example.com/stream',
+      transport: 'streamable-http',
+      headers: {
+        authorization: 'Bearer canonical-token',
+      },
+    });
+  });
 });
 
 describe('resolveModelSourceForOpenClawProvider', () => {

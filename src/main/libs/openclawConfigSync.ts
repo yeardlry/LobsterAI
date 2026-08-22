@@ -14,6 +14,7 @@ import {
 } from '../../shared/browserWebAccess/constants';
 import { COWORK_TEMP_DIR_NAME } from '../../shared/cowork/constants';
 import { CoworkErrorModelSource } from '../../shared/cowork/errorDetail';
+import type { McpTransportType } from '../../shared/mcp/constants';
 import { normalizeMcpServerUrlInput } from '../../shared/mcp/url';
 import { OPENCLAW_PLUGIN_INDEX_MANAGED_KEYS } from '../../shared/openclawEngine/constants';
 import { OpenClawTranscriptSafetyLimit } from '../../shared/openclawTranscript/constants';
@@ -1719,12 +1720,18 @@ const isBundledPluginAvailable = (pluginId: string): boolean => {
 
 export interface ResolvedMcpServer {
   name: string;
-  transportType: 'stdio' | 'sse' | 'http';
+  transportType: McpTransportType;
   command?: string;
   args?: string[];
   env?: Record<string, string>;
   url?: string;
   headers?: Record<string, string>;
+  /**
+   * When true, McpRuntime has already injected `Authorization: Bearer <token>`
+   * into `headers` from the current lit login session. The OpenClaw config
+   * writer does not act on this flag; it only documents the resolved state.
+   */
+  useAuthToken?: boolean;
 }
 
 // Normalize header keys to lowercase before writing to openclaw.json.
@@ -1786,6 +1793,7 @@ function buildOpenClawMcpServers(
           entry.headers = lowercaseHeaderKeys(server.headers);
         break;
       case 'http':
+      case 'streamable-http':
         entry.url = normalizedRemoteUrl;
         if (server.headers && Object.keys(server.headers).length > 0)
           entry.headers = lowercaseHeaderKeys(server.headers);

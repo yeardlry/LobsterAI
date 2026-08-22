@@ -148,6 +148,14 @@
           "!**/test/**",
           "!**/__tests__/**"
         ]
+      },
+      {
+        "from": "vendor/ccbt-runtime/current",
+        "to": "ccbt-runtime",
+        "filter": [
+          "**/*",
+          "!**/*.map"
+        ]
       }
     ]
   },
@@ -240,6 +248,14 @@
           "!**/tests/**",
           "!**/test/**",
           "!**/__tests__/**"
+        ]
+      },
+      {
+        "from": "vendor/ccbt-runtime/current",
+        "to": "ccbt-runtime",
+        "filter": [
+          "**/*",
+          "!**/*.map"
         ]
       }
     ],

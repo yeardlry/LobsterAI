@@ -170,6 +170,39 @@ OPENCLAW_FORCE_BUILD=1 npm run electron:dev:openclaw
 OPENCLAW_SKIP_ENSURE=1 npm run electron:dev:openclaw
 ```
 
+### ccbt Runtime (Second Agent Engine)
+
+ccbt ([claude-code-best-thank](https://github.com/yeardlry/claude-code-best-thank)) is the second cowork agent engine (ACP protocol over stdio), running side by side with OpenClaw. The pinned ccbt version and Bun version live in `package.json` under `ccbt`. See `docs/` and `scripts/build-ccbt-runtime.sh` in the ccbt repository for the full integration plan.
+
+```bash
+# Assemble vendor/ccbt-runtime/current for the current platform
+npm run ccbt:runtime:mac-arm64   # also: mac-x64, win-x64, linux-x64
+
+# ACP round-trip smoke test against the assembled runtime
+npm run ccbt:verify
+
+# Build from a custom ccbt source checkout / force rebuild / reuse existing dist
+CCBT_SRC=/path/to/ccbt npm run ccbt:runtime:mac-arm64
+CCBT_FORCE_BUILD=1 npm run ccbt:runtime:mac-arm64
+CCBT_SKIP_BUILD=1 npm run ccbt:runtime:mac-arm64
+```
+
+Two deliberate build decisions (recorded 2026-08-16):
+
+1. **The bundled Bun binary does NOT come from GitHub Releases.** Direct
+   GitHub downloads are unreliable on this network (SSL timeouts / 404).
+   Instead: when the build host platform matches the target and the local
+   `bun --version` equals the pinned version, the local binary is copied;
+   otherwise the official `@oven/bun-<os>-<arch>@<version>` npm platform
+   package is fetched via `npm pack`, which works through any npm registry
+   mirror (e.g. npmmirror). Both are Bun's official distribution channels.
+2. **The source-clone flow is not yet usable.** The ccbt repository has no
+   git tags, so `git clone --branch <version>` cannot resolve. The build
+   script first looks for a local checkout at `../claude-code-best-thank` or
+   `../../ClaudeCode/claude-code-best-thank`, and only falls back to cloning
+   `ccbt.repo` at tag `ccbt.version`. Publishing tags in the ccbt repository
+   enables the clone flow for CI.
+
 ## Packaging
 
 <details>
