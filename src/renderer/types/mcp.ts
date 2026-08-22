@@ -1,5 +1,5 @@
 // MCP Server type definitions
-export type McpTransportType = 'stdio' | 'sse' | 'http';
+export type McpTransportType = 'stdio' | 'sse' | 'http' | 'streamable-http';
 
 export const McpRegistryEntryKind = {
   Server: 'server',
@@ -18,6 +18,12 @@ export interface McpServerConfig {
   env?: Record<string, string>;  // stdio
   url?: string;                  // sse / http
   headers?: Record<string, string>; // sse / http
+  /**
+   * When true, the main process injects `Authorization: Bearer <accessToken>`
+   * into the resolved headers at sync time, sourced from the current lit
+   * login session. Ignored outside a lit session.
+   */
+  useAuthToken?: boolean;
   isBuiltIn: boolean;            // installed from built-in registry
   githubUrl?: string;            // GitHub repository URL
   registryId?: string;           // matching registry entry ID
@@ -55,6 +61,10 @@ export interface McpServerFormData {
   env?: Record<string, string>;
   url?: string;
   headers?: Record<string, string>;
+  /**
+   * Mirror of McpServerConfig.useAuthToken; see that field for semantics.
+   */
+  useAuthToken?: boolean;
   isBuiltIn?: boolean;
   githubUrl?: string;
   registryId?: string;

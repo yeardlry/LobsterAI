@@ -851,6 +851,14 @@ const McpManager: React.FC = () => {
             <span className={`shrink-0 rounded px-1.5 py-0.5 font-medium ${TRANSPORT_BADGE_COLORS[server.transportType] || ''}`}>
               {server.transportType}
             </span>
+            {server.useAuthToken && (
+              <span
+                className="shrink-0 rounded bg-emerald-500/10 px-1.5 py-0.5 font-medium text-emerald-600 dark:text-emerald-400"
+                title={i18nService.t('mcpUseAuthTokenHint')}
+              >
+                {i18nService.t('mcpUseAuthToken')}
+              </span>
+            )}
             {launchStatusLabel && (
               <span
                 className={`shrink-0 rounded px-1.5 py-0.5 font-medium ${getLaunchStatusClass(server)}`}
@@ -874,7 +882,7 @@ const McpManager: React.FC = () => {
                 <span className="min-w-0 truncate">{getStdioCommandSummary(server.command, server.args)}</span>
               </>
             )}
-            {(server.transportType === 'sse' || server.transportType === 'http') && server.url && (
+            {(server.transportType === 'sse' || server.transportType === 'http' || server.transportType === 'streamable-http') && server.url && (
               <>
                 <span className="shrink-0 text-secondary/50">·</span>
                 <span className="min-w-0 truncate">{server.url}</span>
@@ -959,6 +967,12 @@ const McpManager: React.FC = () => {
     if (envKeys) info.push({ label: i18nService.t('mcpDetailEnvKeys'), value: envKeys, mono: true });
     const headerKeys = getKeyListValue(server.headers);
     if (headerKeys) info.push({ label: i18nService.t('mcpDetailHeaders'), value: headerKeys, mono: true });
+    if (server.useAuthToken) {
+      info.push({
+        label: i18nService.t('mcpUseAuthToken'),
+        value: i18nService.t('mcpUseAuthTokenHint'),
+      });
+    }
     if (launchStatusLabel) {
       info.push({
         label: i18nService.t('mcpDetailLaunch'),

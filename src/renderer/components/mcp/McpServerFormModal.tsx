@@ -6,10 +6,10 @@ import { McpJsonImportErrorCode, McpJsonImportResult, parseMcpServersJson } from
 import { McpRegistryEntry,McpServerConfig, McpServerFormData } from '../../types/mcp';
 import Modal from '../common/Modal';
 
-const TRANSPORT_OPTIONS: { value: 'stdio' | 'sse' | 'http'; label: string; descKey: string }[] = [
+const TRANSPORT_OPTIONS: { value: 'stdio' | 'sse' | 'http' | 'streamable-http'; label: string; descKey: string }[] = [
   { value: 'stdio', label: 'stdio', descKey: 'mcpTransportStdio' },
   { value: 'sse', label: 'SSE', descKey: 'mcpTransportSse' },
-  { value: 'http', label: 'HTTP', descKey: 'mcpTransportHttp' },
+  { value: 'streamable-http', label: 'Streamable HTTP', descKey: 'mcpTransportStreamableHttp' },
 ];
 
 export const McpFormInputMode = {
@@ -32,7 +32,7 @@ const MCP_JSON_EXAMPLE = `{
       "env": { "API_KEY": "your-key" }
     },
     "remote-server": {
-      "type": "http",
+      "type": "streamable-http",
       "url": "https://example.com/mcp"
     }
   }
@@ -67,12 +67,13 @@ const McpServerFormModal: React.FC<McpServerFormModalProps> = ({
   const [isImporting, setIsImporting] = useState(false);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const [transportType, setTransportType] = useState<'stdio' | 'sse' | 'http'>('stdio');
+  const [transportType, setTransportType] = useState<'stdio' | 'sse' | 'http' | 'streamable-http'>('stdio');
   const [command, setCommand] = useState('');
   const [argsText, setArgsText] = useState('');
   const [envRows, setEnvRows] = useState<{ key: string; value: string; required?: boolean }[]>([]);
   const [url, setUrl] = useState('');
   const [headerRows, setHeaderRows] = useState<{ key: string; value: string }[]>([]);
+  const [useAuthToken, setUseAuthToken] = useState(false);
   const [error, setError] = useState('');
   const [envErrors, setEnvErrors] = useState<Record<number, boolean>>({});
 
@@ -101,6 +102,7 @@ const McpServerFormModal: React.FC<McpServerFormModalProps> = ({
           ? Object.entries(server.headers).map(([key, value]) => ({ key, value }))
           : []
       );
+      setUseAuthToken(server.useAuthToken === true);
     } else if (registryEntry) {
       // Registry install mode — pre-fill from template
       setName(registryEntry.name);
@@ -131,6 +133,7 @@ const McpServerFormModal: React.FC<McpServerFormModalProps> = ({
       setEnvRows(envEntries);
       setUrl('');
       setHeaderRows([]);
+      setUseAuthToken(false);
     } else {
       // Create mode
       setName('');
@@ -141,6 +144,7 @@ const McpServerFormModal: React.FC<McpServerFormModalProps> = ({
       setEnvRows([]);
       setUrl('');
       setHeaderRows([]);
+      setUseAuthToken(false);
     }
     setInputMode(McpFormInputMode.Form);
     setJsonText('');
@@ -168,13 +172,13 @@ const McpServerFormModal: React.FC<McpServerFormModalProps> = ({
       return;
     }
 
-    if ((transportType === 'sse' || transportType === 'http') && !url.trim()) {
+    if ((transportType === 'sse' || transportType === 'http' || transportType === 'streamable-http') && !url.trim()) {
       setError(i18nService.t('mcpUrlRequired'));
       return;
     }
 
     let normalizedUrl = '';
-    if (transportType === 'sse' || transportType === 'http') {
+    if (transportType === 'sse' || transportType === 'http' || transportType === 'streamable-http') {
       const normalized = normalizeMcpServerUrlInput(url);
       if (!normalized.ok) {
         setError(
@@ -232,6 +236,7 @@ const McpServerFormModal: React.FC<McpServerFormModalProps> = ({
     } else {
       data.url = normalizedUrl;
       data.headers = headers;
+      data.useAuthToken = useAuthToken;
     }
 
     // Attach registry metadata if installing from registry
@@ -541,7 +546,7 @@ const McpServerFormModal: React.FC<McpServerFormModalProps> = ({
           )}
 
           {/* sse / http fields */}
-          {(transportType === 'sse' || transportType === 'http') && (
+          {(transportType === 'sse' || transportType === 'http' || transportType === 'streamable-http') && (
             <>
               <div className="space-y-1.5">
                 <label className={labelClass}>{i18nService.t('mcpUrl')}<span className="text-red-500 dark:text-red-400 ml-0.5">*</span></label>
@@ -552,6 +557,23 @@ const McpServerFormModal: React.FC<McpServerFormModalProps> = ({
                   placeholder={i18nService.t('mcpUrlPlaceholder')}
                   className={inputClass}
                 />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="flex items-start gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={useAuthToken}
+                    onChange={(e) => setUseAuthToken(e.target.checked)}
+                    className="mt-0.5 h-4 w-4 rounded border-border text-primary focus:ring-primary"
+                  />
+                  <span className="flex flex-col gap-0.5">
+                    <span className={labelClass}>{i18nService.t('mcpUseAuthToken')}</span>
+                    <span className="text-[11px] leading-4 text-secondary/80">
+                      {i18nService.t('mcpUseAuthTokenHint')}
+                    </span>
+                  </span>
+                </label>
               </div>
 
               <div className="space-y-1.5">

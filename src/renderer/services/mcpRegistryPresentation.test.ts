@@ -29,7 +29,7 @@ function server(id: string, registryId?: string): McpServerConfig {
     name: id,
     description: '',
     enabled: true,
-    transportType: 'http',
+    transportType: 'streamable-http',
     url: `https://example.com/${id}`,
     isBuiltIn: Boolean(registryId),
     registryId,

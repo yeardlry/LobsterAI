@@ -55,7 +55,7 @@ function syncMcpConfig(
 
 function normalizeMcpServerInput(data: Partial<McpServerFormData>): Partial<McpServerFormData> {
   if (
-    (data.transportType === 'sse' || data.transportType === 'http')
+    (data.transportType === 'sse' || data.transportType === 'http' || data.transportType === 'streamable-http')
     && data.url !== undefined
   ) {
     const normalized = normalizeMcpServerUrlInput(data.url);
@@ -113,7 +113,7 @@ function buildQichachaServerData(
   return {
     name: server.name,
     description: server.description,
-    transportType: 'http',
+    transportType: 'streamable-http',
     url: server.url,
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -151,6 +151,7 @@ export function registerMcpHandlers(deps: McpHandlerDeps): void {
         env?: Record<string, string>;
         url?: string;
         headers?: Record<string, string>;
+        useAuthToken?: boolean;
       },
     ) => {
       try {
@@ -186,6 +187,7 @@ export function registerMcpHandlers(deps: McpHandlerDeps): void {
         env?: Record<string, string>;
         url?: string;
         headers?: Record<string, string>;
+        useAuthToken?: boolean;
       },
     ) => {
       try {

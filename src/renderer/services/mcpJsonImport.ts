@@ -58,15 +58,17 @@ const HTTP_TRANSPORT_ALIASES = new Set(['http', 'streamable-http', 'streamable_h
  * Resolve the remote transport type. Explicit "type"/"transport" wins;
  * otherwise fall back to a URL heuristic (legacy SSE endpoints conventionally
  * end with /sse), defaulting to streamable HTTP, the current MCP standard.
+ * Any HTTP-family alias is normalized to the canonical "streamable-http"
+ * value so new persisted data is consistent with the MCP spec and OpenClaw.
  */
 const resolveRemoteTransport = (rawType: unknown, url: string): McpTransportType => {
   if (typeof rawType === 'string') {
     const normalized = rawType.trim().toLowerCase();
     if (normalized === 'sse') return 'sse';
-    if (HTTP_TRANSPORT_ALIASES.has(normalized)) return 'http';
+    if (HTTP_TRANSPORT_ALIASES.has(normalized)) return 'streamable-http';
   }
   if (/\/sse\/?([?#]|$)/i.test(url)) return 'sse';
-  return 'http';
+  return 'streamable-http';
 };
 
 const looksLikeSingleServerConfig = (value: Record<string, unknown>): boolean =>
@@ -117,6 +119,9 @@ export function parseMcpServersJson(input: string): McpJsonImportResult {
     const url = typeof rawConfig.url === 'string'
       ? rawConfig.url.trim()
       : typeof rawConfig.serverUrl === 'string' ? rawConfig.serverUrl.trim() : '';
+    const useAuthToken = typeof rawConfig.useAuthToken === 'boolean'
+      ? rawConfig.useAuthToken
+      : undefined;
 
     if (command) {
       servers.push({
@@ -134,6 +139,7 @@ export function parseMcpServersJson(input: string): McpJsonImportResult {
         transportType: resolveRemoteTransport(rawConfig.type ?? rawConfig.transport, url),
         url,
         headers: toStringRecord(rawConfig.headers),
+        ...(useAuthToken === true ? { useAuthToken: true } : {}),
       });
     } else {
       return { ok: false, code: McpJsonImportErrorCode.EntryInvalid, detail: name };

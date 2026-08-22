@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import crypto from 'crypto';
 
+import type { McpTransportType } from '../../shared/mcp/constants';
 import type { McpLaunchResolution } from './mcpLaunchResolution';
 
 export interface McpServerRecord {
@@ -8,12 +9,18 @@ export interface McpServerRecord {
   name: string;
   description: string;
   enabled: boolean;
-  transportType: 'stdio' | 'sse' | 'http';
+  transportType: McpTransportType;
   command?: string;
   args?: string[];
   env?: Record<string, string>;
   url?: string;
   headers?: Record<string, string>;
+  /**
+   * When true, McpRuntime injects `Authorization: Bearer <accessToken>` into
+   * the resolved headers, sourced from the current lit login session. Only
+   * honored when the active auth session is a lit login.
+   */
+  useAuthToken?: boolean;
   isBuiltIn: boolean;
   githubUrl?: string;
   registryId?: string;
@@ -25,12 +32,14 @@ export interface McpServerRecord {
 export interface McpServerFormData {
   name: string;
   description: string;
-  transportType: 'stdio' | 'sse' | 'http';
+  transportType: McpTransportType;
   command?: string;
   args?: string[];
   env?: Record<string, string>;
   url?: string;
   headers?: Record<string, string>;
+  /** Mirror of McpServerRecord.useAuthToken; see that field for semantics. */
+  useAuthToken?: boolean;
   isBuiltIn?: boolean;
   githubUrl?: string;
   registryId?: string;
@@ -53,6 +62,7 @@ interface McpConfigJson {
   env?: Record<string, string>;
   url?: string;
   headers?: Record<string, string>;
+  useAuthToken?: boolean;
   isBuiltIn?: boolean;
   githubUrl?: string;
   registryId?: string;
@@ -191,12 +201,13 @@ export class McpStore {
       name: row.name,
       description: row.description,
       enabled: row.enabled === 1,
-      transportType: row.transport_type as 'stdio' | 'sse' | 'http',
+      transportType: row.transport_type as McpTransportType,
       command: config.command,
       args: config.args,
       env: config.env,
       url: config.url,
       headers: config.headers,
+      useAuthToken: config.useAuthToken === true ? true : undefined,
       isBuiltIn: config.isBuiltIn === true,
       githubUrl: config.githubUrl,
       registryId: config.registryId,
@@ -213,6 +224,7 @@ export class McpStore {
     if (data.env !== undefined && Object.keys(data.env).length > 0) config.env = data.env;
     if (data.url !== undefined) config.url = data.url;
     if (data.headers !== undefined && Object.keys(data.headers).length > 0) config.headers = data.headers;
+    if (data.useAuthToken === true) config.useAuthToken = true;
     if (data.isBuiltIn) config.isBuiltIn = true;
     if (data.githubUrl) config.githubUrl = data.githubUrl;
     if (data.registryId) config.registryId = data.registryId;
@@ -285,6 +297,7 @@ export class McpStore {
       env: data.env !== undefined ? data.env : existing.env,
       url: data.url !== undefined ? data.url : existing.url,
       headers: data.headers !== undefined ? data.headers : existing.headers,
+      useAuthToken: data.useAuthToken !== undefined ? data.useAuthToken : existing.useAuthToken,
       isBuiltIn: data.isBuiltIn !== undefined ? data.isBuiltIn : existing.isBuiltIn,
       githubUrl: data.githubUrl !== undefined ? data.githubUrl : existing.githubUrl,
       registryId: data.registryId !== undefined ? data.registryId : existing.registryId,

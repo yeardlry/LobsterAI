@@ -33,6 +33,19 @@ export interface McpRuntimeDeps {
     restartGatewayIfRunning?: boolean;
     expectedImpact?: OpenClawConfigImpact;
   }) => Promise<{ success: boolean; changed: boolean }>;
+  /**
+   * Returns the persisted auth tokens from the main-process kv store. Used to
+   * inject `Authorization: Bearer <accessToken>` into remote MCP servers that
+   * opt into `useAuthToken`. Callers must read this fresh on each invocation
+   * so token rotation is picked up at every config sync.
+   */
+  getAuthTokens: () => { accessToken: string; refreshToken: string } | null;
+  /**
+   * Returns true only when the active session was established via
+   * `litLogin`. Used to gate token injection: OAuth sessions hold a different
+   * kind of bearer token and must not be exposed to MCP servers.
+   */
+  isLitAuthSession: () => boolean;
   /** Fired when an AskUserQuestion request is surfaced to the renderer. */
   onAskUserRequested?: (sessionId: string, request: { requestId: string; toolName: string }) => void;
   /** Fired when a pending AskUserQuestion request is dismissed upstream. */
@@ -305,11 +318,40 @@ export class McpRuntime {
         rawCount++;
         await pushRawStdioServer(server);
       } else {
+        const resolvedHeaders: Record<string, string> = { ...(server.headers ?? {}) };
+        let resolvedUseAuthToken = false;
+        if (server.useAuthToken && this.deps.isLitAuthSession()) {
+          // Respect any Authorization header the user already supplied —
+          // litLogin only ever provides one bearer token, so overwriting a
+          // custom enterprise/3rd-party credential would be surprising. Header
+          // names are matched case-insensitively because OpenClaw config
+          // normalizes them to lowercase via `lowercaseHeaderKeys`, and the
+          // user may have typed "Authorization" with any casing in the form.
+          const hasUserAuthorization = Object.keys(resolvedHeaders).some(
+            (key) => key.toLowerCase() === 'authorization',
+          );
+          if (hasUserAuthorization) {
+            console.log(
+              `[MCP] server "${server.name}" has useAuthToken=true but a user-supplied Authorization header is present; using the manual value`,
+            );
+          } else {
+            const tokens = this.deps.getAuthTokens();
+            if (tokens?.accessToken) {
+              resolvedHeaders.Authorization = `Bearer ${tokens.accessToken}`;
+              resolvedUseAuthToken = true;
+            } else {
+              console.warn(
+                `[MCP] server "${server.name}" requested useAuthToken but no lit access token is available; skipping injection`,
+              );
+            }
+          }
+        }
         resolved.push({
           name: server.name,
           transportType: server.transportType,
           url: server.url,
-          headers: server.headers,
+          headers: resolvedHeaders,
+          useAuthToken: resolvedUseAuthToken,
         });
       }
     }

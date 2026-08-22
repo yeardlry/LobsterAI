@@ -17,7 +17,7 @@ export const mcpRegistry: McpRegistryEntry[] = [
     descriptionKey: 'mcpDesc_qichacha',
     category: 'data-api',
     categoryKey: 'mcpCategoryDataApi',
-    transportType: 'http',
+    transportType: 'streamable-http',
     command: 'https://agent.qcc.com/mcp',
     defaultArgs: ['6 servers'],
     oauthProvider: 'qichacha',

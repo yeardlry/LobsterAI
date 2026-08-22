@@ -35,7 +35,7 @@ describe('parseMcpServersJson', () => {
     if (!result.ok) return;
     expect(result.servers).toHaveLength(2);
     expect(result.servers[0].transportType).toBe('stdio');
-    expect(result.servers[1]).toMatchObject({ transportType: 'http', url: 'https://example.com/mcp' });
+    expect(result.servers[1]).toMatchObject({ transportType: 'streamable-http', url: 'https://example.com/mcp' });
   });
 
   test('supports the VS Code style servers wrapper', () => {
@@ -50,9 +50,9 @@ describe('parseMcpServersJson', () => {
   test('resolves remote transport from explicit type aliases', () => {
     for (const [rawType, expected] of [
       ['sse', 'sse'],
-      ['http', 'http'],
-      ['streamable-http', 'http'],
-      ['streamableHttp', 'http'],
+      ['http', 'streamable-http'],
+      ['streamable-http', 'streamable-http'],
+      ['streamableHttp', 'streamable-http'],
     ] as const) {
       const result = parseMcpServersJson(JSON.stringify({
         remote: { type: rawType, url: 'https://example.com/x' },
@@ -72,11 +72,11 @@ describe('parseMcpServersJson', () => {
     expect(result.servers[0].transportType).toBe('sse');
   });
 
-  test('falls back to the /sse URL heuristic, defaulting to http otherwise', () => {
+  test('falls back to the /sse URL heuristic, defaulting to streamable-http otherwise', () => {
     const sse = parseMcpServersJson(JSON.stringify({ a: { url: 'https://example.com/sse' } }));
     const http = parseMcpServersJson(JSON.stringify({ a: { url: 'https://example.com/mcp' } }));
     expect(sse.ok && sse.servers[0].transportType).toBe('sse');
-    expect(http.ok && http.servers[0].transportType).toBe('http');
+    expect(http.ok && http.servers[0].transportType).toBe('streamable-http');
   });
 
   test('prefers stdio when both command and url are present', () => {

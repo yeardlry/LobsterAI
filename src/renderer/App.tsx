@@ -1047,18 +1047,11 @@ const App: React.FC = () => {
     setPrivacyAgreed(true);
   }, []);
 
-  // Login keeps the welcome gate on screen while the browser flow runs; the
-  // effect below releases the gate only once the user is actually logged in.
+  // Login keeps the welcome gate on screen; the credentials form replaces the
+  // gate content and the effect below releases it once the user is logged in.
   const handleWelcomeLogin = useCallback(async () => {
     setWelcomeLoginPending(true);
-    try {
-      await authService.login();
-    } catch (error) {
-      console.error('[App] welcome login failed before browser handoff:', error);
-      setWelcomeLoginPending(false);
-      showToast(i18nService.t('welcomeLoginFailed'));
-    }
-  }, [showToast]);
+  }, []);
   const handleWelcomeCancelLogin = useCallback(() => {
     setWelcomeLoginPending(false);
   }, []);
