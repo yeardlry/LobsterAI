@@ -52,6 +52,22 @@ export const getHtmlSharePublicBaseUrl = (): string => {
   return `${getServerApiBaseUrl()}${HtmlSharePublicRoute.Root}`;
 };
 
+/**
+ * Literature backend base URL (RuoYi /lit/* auth endpoints).
+ * Local service by default; override with LIT_SERVER_BASE_URL in development.
+ */
+export const getLitServerBaseUrl = (): string => {
+  const override = process.env.LIT_SERVER_BASE_URL?.trim();
+  if (process.env.NODE_ENV === 'development' && override) {
+    if (loggedDevelopmentServerBaseUrl !== override) {
+      console.warn(`[Endpoints] routing literature auth traffic to ${override}`);
+      loggedDevelopmentServerBaseUrl = override;
+    }
+    return override;
+  }
+  return 'http://localhost:3000';
+};
+
 export const getUpdateCheckUrl = (): string => (
   isTestModeEnabled()
     ? 'https://api-overmind.youdao.com/openapi/get/luna/hardware/lobsterai/test/update'

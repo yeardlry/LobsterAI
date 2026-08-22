@@ -401,6 +401,43 @@ class AuthService {
   }
 
   /**
+   * Username/password login against the literature backend (/lit/login).
+   * Applies the session the same way the OAuth callback exchange does.
+   */
+  async loginWithCredentials(
+    username: string,
+    password: string,
+  ): Promise<{ success: boolean; error?: string }> {
+    const attemptId = ++this.loginAttemptSequence;
+    writeAuthRendererLog('info', `credentials login attempt ${attemptId} started`);
+    try {
+      const result = await window.electron.auth.litLogin(username, password);
+      if (result.success && result.user) {
+        writeAuthRendererLog('info', `credentials login attempt ${attemptId} succeeded`);
+        store.dispatch(invalidateAuthAccountContext());
+        store.dispatch(clearMediaAccountState());
+        this.applyAuthenticatedState(
+          result.user,
+          result.quota ?? null,
+          null,
+        );
+        await this.loadServerModels();
+        void this.fetchProfileSummary();
+        this.refreshQuota();
+        return { success: true };
+      }
+      writeAuthRendererLog('warn', `credentials login attempt ${attemptId} was rejected`);
+      return { success: false, error: result.error };
+    } catch (error) {
+      writeAuthRendererLog('warn', `credentials login attempt ${attemptId} failed`, error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  /**
    * Fetch login URL from overmind, fallback to Portal login page.
    */
   private async fetchLoginUrl(): Promise<string> {

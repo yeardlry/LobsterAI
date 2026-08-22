@@ -47,6 +47,7 @@ import {
   AuthIpcChannel,
   type AuthLifecycleEvent,
   AuthLifecycleEventType,
+  type AuthLitLoginResult,
   AuthRefreshOutcome,
   AuthRefreshReason,
   type AuthSessionChangedEvent,
@@ -315,6 +316,7 @@ import { DesktopNotificationManager } from './libs/desktopNotificationManager';
 import {
   getHtmlSharePublicBaseUrl,
   getKitStoreUrl,
+  getLitServerBaseUrl,
   getPortalTasksUrl,
   getServerApiBaseUrl,
   getSkillStoreUrl,
@@ -3324,11 +3326,21 @@ const getSkillManager = () => {
   return skillManager;
 };
 
+// Forward-declared so `getMcpRuntime` below can reference them via shorthand
+// property syntax. The actual implementations are assigned in the auth
+// helpers section further down the file. `let` (not `const`) keeps them
+// hoisted in the TypeScript view so the CommonJS compile does not flag a
+// temporal-dead-zone error at module load time.
+let getAuthTokens: () => { accessToken: string; refreshToken: string } | null;
+let isLitAuthSession: () => boolean;
+
 const getMcpRuntime = (): McpRuntime => {
   if (!mcpRuntime) {
     mcpRuntime = new McpRuntime({
       getStore,
       syncOpenClawConfig,
+      getAuthTokens,
+      isLitAuthSession,
       onAskUserRequested: (sessionId, request) => {
         getDesktopNotificationManager().handlePermissionRequest(sessionId, request);
       },
@@ -4702,7 +4714,7 @@ if (!gotTheLock) {
     getStore().set('auth_tokens', { accessToken, refreshToken });
   };
 
-  const getAuthTokens = (): { accessToken: string; refreshToken: string } | null => {
+  getAuthTokens = (): { accessToken: string; refreshToken: string } | null => {
     return getStore().get<{ accessToken: string; refreshToken: string }>('auth_tokens') || null;
   };
 
@@ -4725,6 +4737,55 @@ if (!gotTheLock) {
   const clearAuthTokens = () => {
     getStore().delete('auth_tokens');
   };
+
+  /**
+   * Auth provider marker: 'lit' when the session came from the literature
+   * backend (/lit/login). Absent for the legacy OAuth flow.
+   */
+  const AUTH_PROVIDER_KEY = 'auth_provider';
+  isLitAuthSession = (): boolean => getStore().get<string>(AUTH_PROVIDER_KEY) === 'lit';
+  const setLitAuthProvider = () => {
+    getStore().set(AUTH_PROVIDER_KEY, 'lit');
+  };
+  const clearAuthProvider = () => {
+    getStore().delete(AUTH_PROVIDER_KEY);
+  };
+
+  /**
+   * Map a RuoYi SysUser (from /lit/getInfo) to the client UserProfile shape.
+   */
+  const mapLitUserToProfile = (
+    user: Record<string, unknown>,
+  ): AuthLitLoginResult['user'] => {
+    const userName = typeof user.userName === 'string' ? user.userName : '';
+    const nickName = typeof user.nickName === 'string' ? user.nickName : '';
+    const userId = typeof user.userId === 'number' ? String(user.userId) : undefined;
+    const avatar = typeof user.avatar === 'string' && user.avatar.trim() ? user.avatar.trim() : null;
+    return {
+      yid: userName || nickName || userId || 'lit-user',
+      nickname: nickName || userName,
+      avatarUrl: avatar,
+      userId,
+      accountMode: 'personal',
+    };
+  };
+
+  /**
+   * The literature backend has no quota concept; expose a stable free plan so
+   * entitlement gates degrade to "not entitled" instead of erroring.
+   */
+  const buildLitQuota = (): NonNullable<AuthLitLoginResult['quota']> => ({
+    planName: t('authPlanFree'),
+    subscriptionStatus: 'free',
+    creditsLimit: 0,
+    creditsUsed: 0,
+    creditsRemaining: 0,
+    hasPaidCredits: false,
+    mediaGenerationEntitled: false,
+    shareEntitled: false,
+    deploymentEntitled: false,
+    accountMode: 'personal',
+  });
 
   const getEnterpriseAccountHeaders = (): Record<string, string> => (
     buildEnterpriseAccountRequestHeaders(
@@ -6542,6 +6603,7 @@ if (!gotTheLock) {
     }
     clearAuthTokens();
     clearAuthUser();
+    clearAuthProvider();
     clearEnterpriseAccountContext(getStore());
     clearServerModelMetadata();
     resetAuthQuotaGateState();
@@ -6589,6 +6651,36 @@ if (!gotTheLock) {
     return quota;
   };
 
+  /**
+   * Fetch the literature user profile (/lit/getInfo) with the given token.
+   * Returns null on auth rejection (HTTP 401 or business code != 200);
+   * throws on network-level failures so callers can distinguish them.
+   */
+  const fetchLitProfile = async (
+    accessToken: string,
+  ): Promise<AuthLitLoginResult['user'] | null> => {
+    const baseUrl = getLitServerBaseUrl();
+    const resp = await net.fetch(`${baseUrl}/lit/getInfo`, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (resp.status === 401) {
+      return null;
+    }
+    if (!resp.ok) {
+      throw new Error(`getInfo failed: ${resp.status}`);
+    }
+    const body = (await resp.json()) as {
+      code: number;
+      msg?: string;
+      user?: Record<string, unknown>;
+    };
+    if (body.code !== 200 || !body.user) {
+      return null;
+    }
+    return mapLitUserToProfile(body.user);
+  };
+
   ipcMain.handle(AuthIpcChannel.Login, async (_event, { loginUrl }: { loginUrl?: string } = {}) => {
     const baseUrl = loginUrl || `${getServerApiBaseUrl()}/login`;
     const fallbackUrl = appendLoginParams(baseUrl, { source: 'electron' });
@@ -6627,6 +6719,94 @@ if (!gotTheLock) {
           error: fallbackError instanceof Error ? fallbackError.message : 'Failed to open login',
         };
       }
+    }
+  });
+
+  ipcMain.handle(AuthIpcChannel.LitLogin, async (
+    _event,
+    { username, password }: { username?: string; password?: string },
+  ): Promise<AuthLitLoginResult> => {
+    const name = (username ?? '').trim();
+    if (!name || !password) {
+      return { success: false, error: 'Username and password are required' };
+    }
+    try {
+      const baseUrl = getLitServerBaseUrl();
+      console.log(`[Auth] requesting literature login at ${baseUrl}/lit/login`);
+      const resp = await net.fetch(`${baseUrl}/lit/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: name, password }),
+      });
+      if (!resp.ok) {
+        return { success: false, error: `Login failed: HTTP ${resp.status}` };
+      }
+      const body = (await resp.json()) as {
+        code: number;
+        msg?: string;
+        message?: string;
+        token?: string;
+      };
+      // RuoYi AjaxResult envelope: success is code 200 with a token field.
+      if (body.code !== 200 || !body.token) {
+        return { success: false, error: body.msg || body.message || 'Login failed' };
+      }
+
+      const previousAccountScope = getCurrentMediaAccountScope();
+      authAccountGeneration += 1;
+      clearEnterpriseAccountContext(getStore());
+      clearServerModelMetadata();
+      resetAuthQuotaGateState();
+      saveAuthTokens(body.token, '');
+      setLitAuthProvider();
+
+      // Push the fresh lit access token into the OpenClaw config so any
+      // remote MCP server with `useAuthToken: true` gets the new bearer
+      // header on its next request. Failures here are non-fatal — the
+      // login itself already succeeded.
+      try {
+        await syncOpenClawConfig({
+          reason: 'auth-lit-login',
+          expectedImpact: OpenClawConfigImpact.Restart,
+        });
+      } catch (error) {
+        console.warn('[Auth] post-lit-login OpenClaw sync failed (non-fatal):', error);
+      }
+
+      let profile: AuthLitLoginResult['user'] | null = null;
+      try {
+        profile = await fetchLitProfile(body.token);
+      } catch (error) {
+        console.warn('[Auth] literature profile fetch failed after login:', error);
+      }
+      if (!profile) {
+        // Token is valid but the profile could not be resolved; keep a minimal
+        // identity so the session can still be established.
+        profile = {
+          yid: name,
+          nickname: name,
+          avatarUrl: null,
+          accountMode: 'personal',
+        };
+      }
+      saveAuthUser(profile);
+      mediaSelectionBySession.clear();
+      mediaTurnAccountScopeBySession.clear();
+      mediaReferencesBySession.clear();
+      if (previousAccountScope) {
+        clearMediaPollingStateForOwner(previousAccountScope.ownerAccountKey);
+      }
+      if (pendingMediaTasks.size === 0) {
+        stopMediaPollTimer();
+      }
+      console.log('[Auth] literature login completed');
+      return { success: true, user: profile, quota: buildLitQuota() };
+    } catch (error) {
+      console.error('[Auth] literature login failed:', error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Login failed',
+      };
     }
   });
 
@@ -6805,6 +6985,40 @@ if (!gotTheLock) {
           hasCredentials: false,
         };
       }
+      // Literature backend session: profile comes from /lit/getInfo and the
+      // quota is a stable local free plan (the backend has no quota concept).
+      if (isLitAuthSession()) {
+        try {
+          const profile = await fetchLitProfile(tokens.accessToken);
+          if (!profile) {
+            clearLocalAuthSession({
+              reason: AuthSessionChangeReason.RefreshRejected,
+              notifyRenderer: true,
+            });
+            return {
+              success: false,
+              status: AuthSessionStatus.Unauthenticated,
+              hasCredentials: false,
+            };
+          }
+          saveAuthUser(profile);
+          return {
+            success: true,
+            status: AuthSessionStatus.Authenticated,
+            user: profile,
+            quota: buildLitQuota(),
+            enterpriseContext: null,
+          };
+        } catch (error) {
+          console.warn('[Auth] literature profile refresh temporarily unavailable:', error);
+          return {
+            success: false,
+            status: AuthSessionStatus.TemporarilyUnavailable,
+            hasCredentials: true,
+            cachedUser: getAuthUser(),
+          };
+        }
+      }
       const requestAccountGeneration = authAccountGeneration;
       const requestAccountScope = getCurrentMediaAccountScope();
       const serverBaseUrl = getServerApiBaseUrl();
@@ -6911,6 +7125,10 @@ if (!gotTheLock) {
     try {
       const tokens = getAuthTokens();
       if (!tokens) return { success: false };
+      // Literature backend session: no server-side quota to fetch.
+      if (isLitAuthSession()) {
+        return { success: true, quota: buildLitQuota() };
+      }
       const requestAccountGeneration = authAccountGeneration;
       const requestAccountScope = getCurrentMediaAccountScope();
       const serverBaseUrl = getServerApiBaseUrl();
@@ -7033,6 +7251,7 @@ if (!gotTheLock) {
 
   ipcMain.handle(AuthIpcChannel.Logout, async () => {
     const tokens = getAuthTokens();
+    const litSession = isLitAuthSession();
     const enterpriseHeaders = getEnterpriseAccountHeaders();
     const logoutBody = JSON.stringify(withKeyfromBody({}));
     clearLocalAuthSession({
@@ -7043,8 +7262,10 @@ if (!gotTheLock) {
 
     if (tokens) {
       try {
-        const serverBaseUrl = getServerApiBaseUrl();
-        const logoutUrl = `${serverBaseUrl}/api/auth/logout`;
+        // Literature backend session logs out against /lit/logout.
+        const logoutUrl = litSession
+          ? `${getLitServerBaseUrl()}/lit/logout`
+          : `${getServerApiBaseUrl()}/api/auth/logout`;
         console.log(`[Auth] requesting logout at ${logoutUrl}`);
         await net.fetch(logoutUrl, {
           method: 'POST',
@@ -13424,7 +13645,7 @@ if (!gotTheLock) {
               mcpStoreInstance.updateServer(existing.id, {
                 name: server.name,
                 description: server.description,
-                transportType: server.transportType as 'stdio' | 'sse' | 'http',
+                transportType: server.transportType as 'stdio' | 'sse' | 'http' | 'streamable-http',
                 command: server.command,
                 args: server.args,
                 env: server.env,
@@ -13433,7 +13654,7 @@ if (!gotTheLock) {
               mcpStoreInstance.createServer({
                 name: server.name,
                 description: server.description,
-                transportType: server.transportType as 'stdio' | 'sse' | 'http',
+                transportType: server.transportType as 'stdio' | 'sse' | 'http' | 'streamable-http',
                 command: server.command,
                 args: server.args,
                 env: server.env,

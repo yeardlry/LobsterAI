@@ -2,6 +2,8 @@ import React from 'react';
 
 import { i18nService } from '@/services/i18n';
 
+import LitLoginForm from './LitLoginForm';
+
 const SERVICE_TERMS_URL = 'https://c.youdao.com/dict/hardware/lobsterai/lobsterai_service.html';
 
 // Ripple rings radiating from the logo: diameter and opacity per ring.
@@ -92,13 +94,12 @@ const WelcomeDialog: React.FC<WelcomeDialogProps> = ({
         <div className="flex min-h-[140px] w-full flex-col items-center">
           {loginPending ? (
             <>
-              {/* waiting for the browser login to complete — the gate stays until auth lands */}
-              <div className="flex h-11 items-center gap-2.5 text-sm text-secondary">
-                <div
-                  className="h-4 w-4 rounded-full border-2 border-border border-t-foreground animate-spin"
-                  aria-hidden="true"
-                />
-                {i18nService.t('welcomeLoginWaiting')}
+              {/* credentials form against the literature backend; the gate stays until auth lands */}
+              <div className="w-full">
+                <div className="mb-4 text-sm font-medium text-foreground text-center">
+                  {i18nService.t('litLoginTitle')}
+                </div>
+                <LitLoginForm />
               </div>
               <button
                 onClick={onCancelLogin}

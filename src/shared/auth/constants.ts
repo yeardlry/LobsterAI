@@ -12,6 +12,7 @@ export const AuthIpcChannel = {
   GetQuota: 'auth:getQuota',
   GetUser: 'auth:getUser',
   LifecycleEvent: 'auth:lifecycleEvent',
+  LitLogin: 'auth:litLogin',
   Login: 'auth:login',
   Logout: 'auth:logout',
   QuotaChanged: 'auth:quotaChanged',
@@ -24,6 +25,34 @@ export type AuthIpcChannel = typeof AuthIpcChannel[keyof typeof AuthIpcChannel];
 export interface AuthLoginResult {
   success: boolean;
   redirectUrl?: string;
+  error?: string;
+}
+
+/**
+ * Username/password login result against the literature backend (/lit/login).
+ * Shape mirrors the exchange result so the renderer can apply it identically.
+ */
+export interface AuthLitLoginResult {
+  success: boolean;
+  user?: {
+    yid: string;
+    nickname: string;
+    avatarUrl: string | null;
+    userId?: string;
+    accountMode?: 'personal' | 'enterprise';
+  };
+  quota?: {
+    planName: string;
+    subscriptionStatus: string;
+    creditsLimit: number;
+    creditsUsed: number;
+    creditsRemaining: number;
+    hasPaidCredits?: boolean;
+    mediaGenerationEntitled?: boolean;
+    shareEntitled?: boolean;
+    deploymentEntitled?: boolean;
+    accountMode?: 'personal' | 'enterprise';
+  };
   error?: string;
 }
 

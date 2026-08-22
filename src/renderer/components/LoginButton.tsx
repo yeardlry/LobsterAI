@@ -33,6 +33,7 @@ import {
 } from './accountMenuState';
 import CreditsFinalRewardModal from './CreditsFinalRewardModal';
 import UserAvatarIcon from './icons/UserAvatarIcon';
+import LitLoginForm from './LitLoginForm';
 
 const ACCOUNT_MENU_ANALYTICS_SOURCE = 'home_account_menu';
 
@@ -399,6 +400,7 @@ const LoginButton: React.FC<LoginButtonProps> = ({ contentLeftOffset = 0 }) => {
   const { isLoggedIn, isLoading, profileSummary, user } = useSelector((state: RootState) => state.auth);
   const enterpriseAccountContext = useSelector(selectEnterpriseAccountContext);
   const [showMenu, setShowMenu] = useState(false);
+  const [showLoginForm, setShowLoginForm] = useState(false);
   const [selectedFinalRewardCode, setSelectedFinalRewardCode] = useState<string | null>(null);
   const [finalRewardLoading, setFinalRewardLoading] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -423,19 +425,23 @@ const LoginButton: React.FC<LoginButtonProps> = ({ contentLeftOffset = 0 }) => {
         && !isEnterpriseAccountFlyout
       ) {
         setShowMenu(false);
+        setShowLoginForm(false);
       }
     };
-    if (showMenu) {
+    if (showMenu || showLoginForm) {
       document.addEventListener('mousedown', handleClickOutside);
     }
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
     };
-  }, [showMenu]);
+  }, [showMenu, showLoginForm]);
 
   useEffect(() => {
     if (!isLoggedIn || (selectedFinalRewardCode && !finalReward)) {
       setSelectedFinalRewardCode(null);
+    }
+    if (isLoggedIn) {
+      setShowLoginForm(false);
     }
   }, [finalReward, isLoggedIn, selectedFinalRewardCode]);
 
@@ -456,7 +462,7 @@ const LoginButton: React.FC<LoginButtonProps> = ({ contentLeftOffset = 0 }) => {
       return;
     }
     try {
-      await authService.login();
+      setShowLoginForm(!showLoginForm);
       reportAccountMenuAction('login', {
         isLoggedIn: false,
         result: 'success',
@@ -519,6 +525,14 @@ const LoginButton: React.FC<LoginButtonProps> = ({ contentLeftOffset = 0 }) => {
           </>
         )}
       </button>
+      {showLoginForm && !isLoggedIn && (
+        <div className="absolute bottom-full left-[-0.5rem] z-50 mb-1 w-[16rem] rounded-xl border border-border bg-surface p-4 shadow-popover popover-enter">
+          <div className="mb-3 text-sm font-medium text-foreground">
+            {i18nService.t('litLoginTitle')}
+          </div>
+          <LitLoginForm onSuccess={() => setShowLoginForm(false)} />
+        </div>
+      )}
       {showMenu && isLoggedIn && (
         enterpriseAccountContext
           ? (

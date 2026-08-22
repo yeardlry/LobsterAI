@@ -417,7 +417,7 @@ interface McpServerConfigIPC {
   name: string;
   description: string;
   enabled: boolean;
-  transportType: 'stdio' | 'sse' | 'http';
+  transportType: 'stdio' | 'sse' | 'http' | 'streamable-http';
   command?: string;
   args?: string[];
   env?: Record<string, string>;
@@ -455,7 +455,7 @@ interface McpMarketplaceServer {
   description_zh: string;
   description_en: string;
   category: string;
-  transportType: 'stdio' | 'sse' | 'http';
+  transportType: 'stdio' | 'sse' | 'http' | 'streamable-http';
   command: string;
   defaultArgs: string[];
   requiredEnvKeys?: string[];
@@ -1795,6 +1795,10 @@ interface IElectronAPI {
   };
   auth: {
     login: (loginUrl?: string) => Promise<AuthLoginResult>;
+    litLogin: (
+      username: string,
+      password: string,
+    ) => Promise<import('../../shared/auth/constants').AuthLitLoginResult>;
     exchange: (
       code: string,
     ) => Promise<{
