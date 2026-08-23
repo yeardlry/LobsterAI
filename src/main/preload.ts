@@ -61,6 +61,7 @@ import {
 } from '../shared/localWebServices/constants';
 import { McpIpcChannel } from '../shared/mcp/constants';
 import { OpenClawEngineIpc } from '../shared/openclawEngine/constants';
+import { PaperPipelineIpcChannel } from '../shared/paperPipeline/constants';
 import { PermissionIpcChannel } from '../shared/permissions/constants';
 import type { Platform } from '../shared/platform';
 import {
@@ -156,6 +157,34 @@ contextBridge.exposeInMainWorld('electron', {
       const handler = () => callback();
       ipcRenderer.on(McpIpcChannel.Changed, handler);
       return () => ipcRenderer.removeListener(McpIpcChannel.Changed, handler);
+    },
+  },
+  paperPipeline: {
+    listPendingTasks: () =>
+      ipcRenderer.invoke(PaperPipelineIpcChannel.ListPendingTasks),
+    advanceTask: (pmid: string, currentStatus: string) =>
+      ipcRenderer.invoke(PaperPipelineIpcChannel.AdvanceTask, { pmid, currentStatus }),
+    reportFailure: (payload: {
+      pmid: string;
+      errorMessage: string;
+      markAsFailed: boolean;
+      resetTo?: string;
+    }) => ipcRenderer.invoke(PaperPipelineIpcChannel.ReportFailure, payload),
+    resetTask: (pmid: string, resetTo?: string) =>
+      ipcRenderer.invoke(PaperPipelineIpcChannel.ResetTask, { pmid, resetTo }),
+    getTaskLog: (pmid: string) =>
+      ipcRenderer.invoke(PaperPipelineIpcChannel.GetTaskLog, { pmid }),
+    submitWechatDoc: (payload: { pmid: string; docUrl: string; extras?: Record<string, unknown> }) =>
+      ipcRenderer.invoke(PaperPipelineIpcChannel.SubmitWechatDoc, payload),
+    onStatusChanged: (callback: (data: unknown) => void) => {
+      const handler = (_event: unknown, data: unknown) => callback(data);
+      ipcRenderer.on(PaperPipelineIpcChannel.StatusChanged, handler);
+      return () => ipcRenderer.removeListener(PaperPipelineIpcChannel.StatusChanged, handler);
+    },
+    onLog: (callback: (data: unknown) => void) => {
+      const handler = (_event: unknown, data: unknown) => callback(data);
+      ipcRenderer.on(PaperPipelineIpcChannel.Log, handler);
+      return () => ipcRenderer.removeListener(PaperPipelineIpcChannel.Log, handler);
     },
   },
   kits: {

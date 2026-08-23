@@ -230,6 +230,7 @@ import { registerEnterpriseAccountHandlers } from './ipcHandlers/enterpriseAccou
 import { registerKitHandlers } from './ipcHandlers/kits';
 import { registerMcpHandlers } from './ipcHandlers/mcp';
 import { registerNimQrLoginHandlers } from './ipcHandlers/nimQrLogin';
+import { registerPaperPipelineHandlers } from './ipcHandlers/paperPipeline';
 import { registerPermissionIpcHandlers } from './ipcHandlers/permissions/handlers';
 import { registerPluginHandlers } from './ipcHandlers/plugins';
 import {
@@ -483,6 +484,7 @@ import {
   loadOpenClawSessionPolicyConfig,
   saveOpenClawSessionPolicyConfig,
 } from './openclawSessionPolicy/store';
+import { initPaperPipelineServiceManager } from './paperPipeline/paperPipelineServiceManager';
 import { registerVoiceInputPermissionHandler } from './permissions/voiceInputPermission';
 import { isHiddenUserPluginId } from './plugins/pluginManager';
 import { SkillManager } from './skills/skillManager';
@@ -6607,6 +6609,8 @@ if (!gotTheLock) {
     clearEnterpriseAccountContext(getStore());
     clearServerModelMetadata();
     resetAuthQuotaGateState();
+    // Paper pipeline is lit-only. Handlers gate on isLitAuthSession() so
+    // the singleton stays installed across logouts; nothing to dispose here.
 
     const quotaGateSyncScheduled = syncOpenClawConfigIfAuthQuotaGateChanged(previousQuotaGateState);
     if (!quotaGateSyncScheduled) {
@@ -10495,6 +10499,23 @@ if (!gotTheLock) {
       getCoworkStore().getSession(sessionId, 0)?.title ?? null,
   };
   registerScheduledTaskHandlers(scheduledTaskHandlerDeps);
+
+  // ==================== Paper Pipeline IPC Handlers (lit backend) ====================
+
+  initPaperPipelineServiceManager({
+    getLitServerBaseUrl,
+    getAccessToken: () => getAuthTokens()?.accessToken ?? null,
+    isLitAuthSession,
+    // Phase 7 — wire the Cowork runtime + store so the LLM PDF URL
+    // finder can spin up a hidden session as a priority-2 fallback
+    // when the OpenClaw token-proxy path returns nothing.
+    coworkRuntime: getCoworkEngineRouter(),
+    coworkStore: getCoworkStore(),
+    resolveAgentCwd: resolveAgentDefaultWorkingDirectory,
+  });
+  registerPaperPipelineHandlers({
+    isLitAuthSession,
+  });
 
   registerNimQrLoginHandlers({
     startNimQrLogin,

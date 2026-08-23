@@ -43,12 +43,13 @@ import SidebarExperienceSlot from './SidebarExperienceSlot';
 interface SidebarProps {
   onShowSettings: () => void;
   onShowLogin?: () => void;
-  activeView: 'cowork' | 'skills' | 'scheduledTasks' | 'kits' | 'mcp' | 'sites';
+  activeView: 'cowork' | 'skills' | 'scheduledTasks' | 'kits' | 'mcp' | 'sites' | 'paperTasks';
   onShowSkills: () => void;
   onShowCowork: () => void;
   onShowScheduledTasks: () => void;
   onShowKits: () => void;
   onShowSites: () => void;
+  onShowPaperTasks: () => void;
   onNewChat: () => void;
   isCollapsed: boolean;
   onToggleCollapse: () => void;
@@ -159,6 +160,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   onShowScheduledTasks,
   onShowKits,
   onShowSites,
+  onShowPaperTasks,
   onNewChat,
   isCollapsed,
   onToggleCollapse,
@@ -619,6 +621,19 @@ const Sidebar: React.FC<SidebarProps> = ({
           >
             <SidebarAutomationIcon className="h-4 w-4 shrink-0" />
             {i18nService.t('scheduledTasks')}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              reportSidebarAction('open_paper_tasks', { activeView, isCollapsed });
+              setIsSearchOpen(false);
+              onShowPaperTasks();
+            }}
+            className={activeView === 'paperTasks' ? activeSidebarNavItemClassName : sidebarNavItemClassName}
+            aria-current={activeView === 'paperTasks' ? 'page' : undefined}
+          >
+            <SidebarAutomationIcon className="h-4 w-4 shrink-0" />
+            {i18nService.t('paperTasks')}
           </button>
           <button
             type="button"

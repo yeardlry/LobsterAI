@@ -28,6 +28,7 @@ import CoworkQuestionWizard from './components/cowork/CoworkQuestionWizard';
 import EngineFailureOverlay from './components/cowork/EngineFailureOverlay';
 import EngineStartupOverlay from './components/cowork/EngineStartupOverlay';
 import KitsView from './components/kits/KitsView';
+import { PaperTasksView } from './components/paperTasks';
 import { ScheduledTasksView } from './components/scheduledTasks';
 import Settings, { type SettingsOpenOptions } from './components/Settings';
 import Sidebar from './components/Sidebar';
@@ -66,6 +67,7 @@ import {
   isLatestAsyncRequest,
 } from './services/latestAsyncRequest';
 import { LogReporterAction, reportYdAnalyzer } from './services/logReporter';
+import { paperTasksService } from './services/paperTasks';
 import { scheduledTaskService } from './services/scheduledTask';
 import { isTextEditingSafeShortcut, matchesShortcut } from './services/shortcuts';
 import { themeService } from './services/theme';
@@ -159,7 +161,7 @@ const logAppUpdateRendererLifecycle = (
 const App: React.FC = () => {
   const [showSettings, setShowSettings] = useState(false);
   const [settingsOptions, setSettingsOptions] = useState<SettingsOpenOptions & { requestId: number }>({ requestId: 0 });
-  const [mainView, setMainView] = useState<'cowork' | 'skills' | 'scheduledTasks' | 'kits' | 'mcp' | 'sites'>('cowork');
+  const [mainView, setMainView] = useState<'cowork' | 'skills' | 'scheduledTasks' | 'kits' | 'mcp' | 'sites' | 'paperTasks'>('cowork');
   const [isInitialized, setIsInitialized] = useState(false);
   const [initError, setInitError] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<ToastEventDetail | null>(null);
@@ -481,6 +483,7 @@ const App: React.FC = () => {
       void waitWithTimeout(scheduledTaskService.init(), 5000, 'scheduledTaskService.init').catch((error) => {
         console.error('[App] initializeApp: scheduledTaskService.init failed:', error);
       });
+      void paperTasksService.init();
 
       if (!configReady) {
         // Schedule only after the startup pass releases its in-flight guard;
@@ -640,6 +643,10 @@ const App: React.FC = () => {
 
   const handleShowKits = useCallback(() => {
     setMainView('kits');
+  }, []);
+
+  const handleShowPaperTasks = useCallback(() => {
+    setMainView('paperTasks');
   }, []);
 
   const handleSkillsConnectorsSectionChange = useCallback((section: SkillsConnectorsSection) => {
@@ -1723,6 +1730,7 @@ const App: React.FC = () => {
           onShowScheduledTasks={handleShowScheduledTasks}
           onShowKits={handleShowKits}
           onShowSites={handleShowSites}
+          onShowPaperTasks={handleShowPaperTasks}
           onNewChat={handleNewChat}
           isCollapsed={isSidebarCollapsed}
           onToggleCollapse={handleToggleSidebar}
@@ -1764,6 +1772,11 @@ const App: React.FC = () => {
                 onToggleSidebar={handleToggleSidebar}
                 onNewChat={handleNewChat}
                 updateBadge={collapsedHeaderUpdateBadge}
+              />
+            ) : mainView === 'paperTasks' ? (
+              <PaperTasksView
+                isSidebarCollapsed={isSidebarCollapsed}
+                onToggleSidebar={handleToggleSidebar}
               />
             ) : mainView === 'kits' ? (
               <KitsView
