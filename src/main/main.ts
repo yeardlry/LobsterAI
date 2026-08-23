@@ -10509,8 +10509,16 @@ if (!gotTheLock) {
     // Phase 7 — wire the Cowork runtime + store so the LLM PDF URL
     // finder can spin up a hidden session as a priority-2 fallback
     // when the OpenClaw token-proxy path returns nothing.
-    coworkRuntime: getCoworkEngineRouter(),
-    coworkStore: getCoworkStore(),
+    //
+    // Pass thunks instead of evaluating the singletons eagerly: this
+    // block runs at module load, BEFORE `initStore()` runs inside
+    // `initApp`. `getCoworkEngineRouter()` / `getCoworkStore()` both
+    // call `getStore()` which throws "Store not initialized" until
+    // `initStore()` has been called. The service resolves the thunks
+    // later when `initApp` re-enters `initPaperPipelineServiceManager`
+    // after store init — see `paperPipelineService.ts:118-126`.
+    coworkRuntime: () => getCoworkEngineRouter(),
+    coworkStore: () => getCoworkStore(),
     resolveAgentCwd: resolveAgentDefaultWorkingDirectory,
   });
   registerPaperPipelineHandlers({

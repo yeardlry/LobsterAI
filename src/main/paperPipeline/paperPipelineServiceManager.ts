@@ -13,6 +13,15 @@ import {
   PaperPipelineService,
 } from './paperPipelineService';
 
+/**
+ * `PaperPipelineServiceDeps` exposes every Cowork-side field as a thunk
+ * so the service manager wiring in `main.ts` does not have to call
+ * `getCoworkEngineRouter()` / `getCoworkStore()` before `initStore()` has
+ * run. `PaperPipelineService` itself resolves the thunks when it builds
+ * the default PDF URL finder deps.
+ */
+type MaybeThunk<T> = T | (() => T);
+
 export interface PaperPipelineServiceDeps {
   /** lit backend base URL (see `getLitServerBaseUrl()` in libs/endpoints.ts). */
   getLitServerBaseUrl: () => string;
@@ -26,14 +35,14 @@ export interface PaperPipelineServiceDeps {
    * finder falls back to the OpenClaw token-proxy only (priority-2 is
    * disabled). Tests should pass stubs.
    */
-  coworkRuntime?: CoworkRuntime;
-  coworkStore?: CoworkStore;
+  coworkRuntime?: MaybeThunk<CoworkRuntime>;
+  coworkStore?: MaybeThunk<CoworkStore>;
   /**
    * Resolves the default working directory for an agent. Mirrors
    * `resolveAgentDefaultWorkingDirectory()` in `src/main/main.ts:2194`.
    * Required iff `coworkRuntime` is provided.
    */
-  resolveAgentCwd?: (agentId: string) => string;
+  resolveAgentCwd?: MaybeThunk<(agentId: string) => string>;
 }
 
 let singleton: PaperPipelineService | null = null;

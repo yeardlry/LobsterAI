@@ -90,7 +90,27 @@ const STATUS_TO_ACTION: Partial<Record<PaperPipelineProcessingStatus, PaperPipel
  */
 export class PaperPipelineService {
   private readonly logs = new Map<string, PaperTaskLogEntry[]>();
-  private readonly pdfUrlFinderDeps: PdfUrlFinderDeps;
+  /**
+   * LLM PDF finder deps. When the caller supplies a concrete
+   * `pdfUrlFinderDeps` we store it directly. Otherwise we keep the
+   * Cowork-side fields as thunks and resolve them lazily on first use
+   * — see {@link getPdfUrlFinderDeps}.
+   */
+  private readonly pdfUrlFinderDeps:
+    | PdfUrlFinderDeps
+    | (() => PdfUrlFinderDeps);
+  private readonly coworkRuntimeThunk:
+    | PdfUrlFinderDeps['coworkRuntime']
+    | (() => PdfUrlFinderDeps['coworkRuntime'])
+    | undefined;
+  private readonly coworkStoreThunk:
+    | PdfUrlFinderDeps['coworkStore']
+    | (() => PdfUrlFinderDeps['coworkStore'])
+    | undefined;
+  private readonly resolveAgentCwdThunk:
+    | PdfUrlFinderDeps['resolveAgentCwd']
+    | (() => PdfUrlFinderDeps['resolveAgentCwd'])
+    | undefined;
 
   constructor(
     private readonly client: PaperPipelineClient,
@@ -107,23 +127,89 @@ export class PaperPipelineService {
      * `resolveAgentCwd` the orchestrator has been told about — that
      * keeps the priority-2 hidden-session branch opt-in for the main
      * process.
+     *
+     * The Cowork-side fields accept either a value or a thunk. The
+     * thunk variant is mandatory for the service-manager wiring in
+     * `main.ts`: that block runs at module load BEFORE `initStore()`,
+     * and `getCoworkEngineRouter()` / `getCoworkStore()` both call
+     * `getStore()` which throws until `initStore()` has run. We resolve
+     * the thunks lazily, when the first `DownloadAndUploadPdf` step
+     * actually needs the LLM PDF finder, by which time store init has
+     * finished.
      */
     deps?: {
       pdfUrlFinderDeps?: PdfUrlFinderDeps;
-      coworkRuntime?: PdfUrlFinderDeps['coworkRuntime'];
-      coworkStore?: PdfUrlFinderDeps['coworkStore'];
-      resolveAgentCwd?: PdfUrlFinderDeps['resolveAgentCwd'];
+      coworkRuntime?: PdfUrlFinderDeps['coworkRuntime'] | (() => PdfUrlFinderDeps['coworkRuntime']);
+      coworkStore?: PdfUrlFinderDeps['coworkStore'] | (() => PdfUrlFinderDeps['coworkStore']);
+      resolveAgentCwd?: PdfUrlFinderDeps['resolveAgentCwd'] | (() => PdfUrlFinderDeps['resolveAgentCwd']);
     },
   ) {
     if (deps?.pdfUrlFinderDeps) {
       this.pdfUrlFinderDeps = deps.pdfUrlFinderDeps;
+      this.coworkRuntimeThunk = undefined;
+      this.coworkStoreThunk = undefined;
+      this.resolveAgentCwdThunk = undefined;
     } else {
-      this.pdfUrlFinderDeps = buildDefaultPdfUrlFinderDeps({
-        coworkRuntime: deps?.coworkRuntime,
-        coworkStore: deps?.coworkStore,
-        resolveAgentCwd: deps?.resolveAgentCwd,
-      });
+      // Store the thunks as-is. Resolution happens in
+      // {@link getPdfUrlFinderDeps} on first call, which is after
+      // `initStore()` has finished.
+      this.pdfUrlFinderDeps = () => this.buildDefaultFinderDeps();
+      this.coworkRuntimeThunk = deps?.coworkRuntime;
+      this.coworkStoreThunk = deps?.coworkStore;
+      this.resolveAgentCwdThunk = deps?.resolveAgentCwd;
     }
+  }
+
+  /**
+   * Resolve the Cowork-side thunks exactly once, then cache the bundle
+   * so we don't keep calling `getCoworkStore()` on every step. Tests
+   * that pass a non-thunk `pdfUrlFinderDeps` skip this code path
+   * entirely.
+   */
+  private buildDefaultFinderDeps(): PdfUrlFinderDeps {
+    const resolveRuntime = (): PdfUrlFinderDeps['coworkRuntime'] => {
+      const v = this.coworkRuntimeThunk;
+      if (v === undefined) return undefined;
+      return typeof v === 'function' && v.length === 0
+        ? (v as () => PdfUrlFinderDeps['coworkRuntime'])()
+        : (v as PdfUrlFinderDeps['coworkRuntime']);
+    };
+    const resolveStore = (): PdfUrlFinderDeps['coworkStore'] => {
+      const v = this.coworkStoreThunk;
+      if (v === undefined) return undefined;
+      return typeof v === 'function' && v.length === 0
+        ? (v as () => PdfUrlFinderDeps['coworkStore'])()
+        : (v as PdfUrlFinderDeps['coworkStore']);
+    };
+    const resolveCwd = (): PdfUrlFinderDeps['resolveAgentCwd'] => {
+      const v = this.resolveAgentCwdThunk;
+      if (v === undefined) return undefined;
+      // `resolveAgentCwd(agentId: string)` is itself a function — use
+      // arity to distinguish a thunk (`() => string`) from a value
+      // (`(agentId: string) => string`).
+      return typeof v === 'function' && v.length === 0
+        ? (v as () => PdfUrlFinderDeps['resolveAgentCwd'])()
+        : (v as PdfUrlFinderDeps['resolveAgentCwd']);
+    };
+    return buildDefaultPdfUrlFinderDeps({
+      coworkRuntime: resolveRuntime(),
+      coworkStore: resolveStore(),
+      resolveAgentCwd: resolveCwd(),
+    });
+  }
+
+  /**
+   * Return the LLM PDF finder deps, resolving any deferred thunks the
+   * first time this is called. Tests that pass a non-thunk `pdfUrlFinderDeps`
+   * get the same instance every time; production code goes through the
+   * thunk wrapper above and resolves the production singletons on first
+   * use, safely after `initStore()`.
+   */
+  private getPdfUrlFinderDeps(): PdfUrlFinderDeps {
+    if (typeof this.pdfUrlFinderDeps === 'function') {
+      return this.pdfUrlFinderDeps();
+    }
+    return this.pdfUrlFinderDeps;
   }
 
   /** Refresh the pending task list from the backend. */
@@ -248,7 +334,7 @@ export class PaperPipelineService {
             abstractText: ctx.abstractText,
             findPdfUrl: async (args) => findPdfUrl({
               ...args,
-              deps: this.pdfUrlFinderDeps,
+              deps: this.getPdfUrlFinderDeps(),
             }),
           });
           this.log(pmid, 'info', `downloaded ${download.bytes} bytes → ${download.localPath}`);
