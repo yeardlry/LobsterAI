@@ -58,7 +58,7 @@ export type ShortcutConfig = Record<ShortcutAction, string> & {
 };
 
 export const FontPreferences = {
-  UiFontSizeDefault: 15,
+  UiFontSizeDefault: 12,
   UiFontSizeMin: 11,
   UiFontSizeMax: 16,
   CodeFontSizeDefault: 14,
@@ -69,7 +69,7 @@ export const FontPreferences = {
 // Bump to force-reset every stored uiFontSize / codeFontSize to the current
 // default one more time. hydrateStoredConfig persists the applied versions, so
 // each version resets at most once and later user choices survive upgrades.
-export const UI_FONT_SIZE_MIGRATION_VERSION = 1;
+export const UI_FONT_SIZE_MIGRATION_VERSION = 2;
 export const CODE_FONT_SIZE_MIGRATION_VERSION = 1;
 
 export const normalizeFontPreference = (
