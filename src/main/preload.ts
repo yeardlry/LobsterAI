@@ -160,10 +160,12 @@ contextBridge.exposeInMainWorld('electron', {
     },
   },
   paperPipeline: {
-    listPendingTasks: () =>
-      ipcRenderer.invoke(PaperPipelineIpcChannel.ListPendingTasks),
+    listPendingTasks: (payload?: { page?: number; pageSize?: number }) =>
+      ipcRenderer.invoke(PaperPipelineIpcChannel.ListPendingTasks, payload ?? {}),
     advanceTask: (pmid: string, currentStatus: string) =>
       ipcRenderer.invoke(PaperPipelineIpcChannel.AdvanceTask, { pmid, currentStatus }),
+    advanceTaskAuto: (pmid: string, currentStatus: string, openAccess?: boolean | null) =>
+      ipcRenderer.invoke(PaperPipelineIpcChannel.AdvanceTaskAuto, { pmid, currentStatus, openAccess }),
     reportFailure: (payload: {
       pmid: string;
       errorMessage: string;
@@ -174,6 +176,10 @@ contextBridge.exposeInMainWorld('electron', {
       ipcRenderer.invoke(PaperPipelineIpcChannel.ResetTask, { pmid, resetTo }),
     getTaskLog: (pmid: string) =>
       ipcRenderer.invoke(PaperPipelineIpcChannel.GetTaskLog, { pmid }),
+    getModelConfig: () =>
+      ipcRenderer.invoke(PaperPipelineIpcChannel.GetModelConfig),
+    setModelConfig: (config: { pipelineModel: string; pdfUrlSuggestModel: string }) =>
+      ipcRenderer.invoke(PaperPipelineIpcChannel.SetModelConfig, config),
     submitWechatDoc: (payload: { pmid: string; docUrl: string; extras?: Record<string, unknown> }) =>
       ipcRenderer.invoke(PaperPipelineIpcChannel.SubmitWechatDoc, payload),
     onStatusChanged: (callback: (data: unknown) => void) => {

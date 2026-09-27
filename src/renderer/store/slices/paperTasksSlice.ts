@@ -4,8 +4,10 @@ import {
   PaperPipelineProcessingStatus,
 } from '../../../shared/paperPipeline/constants';
 import type {
+  PaperPipelineModelConfig,
   PaperTask,
   PaperTaskLogEntry,
+  PaperTaskPage,
   PaperTaskStatusChangedEvent,
 } from '../../../shared/paperPipeline/types';
 
@@ -35,6 +37,12 @@ export interface WechatDraft {
 
 export interface PaperTasksState {
   tasks: PaperTask[];
+  /** Current page (1-based) of `tasks`. */
+  page: number;
+  /** Page size the backend echoed back; defaults to 20. */
+  pageSize: number;
+  /** Total pending tasks across all pages (per backend `/lit/listPendingTasks`). */
+  total: number;
   /** Per-task in-flight status (pmid → action in progress). */
   advancingPmid: string | null;
   listStatus: PaperTasksDataStatus;
@@ -55,10 +63,21 @@ export interface PaperTasksState {
   activeWechatDraftPmid: string | null;
   /** True while `submitWechatDoc` IPC is in flight. */
   submittingWechatPmid: string | null;
+  /**
+   * Pipeline model config (kv-backed, main-process owned). `null` while
+   * the initial `loadModelConfig` IPC is in flight — the settings UI
+   * renders disabled rather than flashing defaults.
+   */
+  modelConfig: PaperPipelineModelConfig | null;
+  /** True while `setModelConfig` IPC is in flight. */
+  modelConfigSaving: boolean;
 }
 
 const initialState: PaperTasksState = {
   tasks: [],
+  page: 1,
+  pageSize: 20,
+  total: 0,
   advancingPmid: null,
   listStatus: PaperTasksDataStatus.Starting,
   listError: null,
@@ -67,6 +86,8 @@ const initialState: PaperTasksState = {
   wechatDrafts: {},
   activeWechatDraftPmid: null,
   submittingWechatPmid: null,
+  modelConfig: null,
+  modelConfigSaving: false,
 };
 
 const paperTasksSlice = createSlice({
@@ -94,10 +115,24 @@ const paperTasksSlice = createSlice({
         state.submittingWechatPmid = null;
       }
     },
-    setTasks(state, action: PayloadAction<PaperTask[]>) {
-      state.tasks = action.payload;
+    setTasks(state, action: PayloadAction<PaperTaskPage>) {
+      // Defense-in-depth: a malformed payload (e.g. an older renderer dispatch
+      // bleeding through before a hot-reload, or a future backend contract
+      // drift) used to crash the reducer with `items.map is not a function`.
+      // Treat every field as optional and fall back to safe defaults so the
+      // UI keeps rendering instead of dying in an unhandled rejection.
+      const payload = action.payload ?? ({} as PaperTaskPage);
+      const items = Array.isArray(payload.items) ? payload.items : [];
+      const total = typeof payload.total === 'number' ? payload.total : items.length;
+      const page = typeof payload.page === 'number' && payload.page > 0 ? payload.page : 1;
+      const pageSize =
+        typeof payload.pageSize === 'number' && payload.pageSize > 0 ? payload.pageSize : items.length || 20;
+      state.tasks = items;
+      state.total = total;
+      state.page = page;
+      state.pageSize = pageSize;
       // Drop log buffers for tasks no longer in the list.
-      const keep = new Set(action.payload.map(t => t.pmid));
+      const keep = new Set(items.map(t => t.pmid));
       for (const key of Object.keys(state.logs)) {
         if (!keep.has(key)) delete state.logs[key];
       }
@@ -134,7 +169,7 @@ const paperTasksSlice = createSlice({
       if (idx >= 0) {
         state.tasks[idx] = {
           ...state.tasks[idx],
-          status: toStatus,
+          processingStatus: toStatus,
           errorMessage: errorMessage ?? state.tasks[idx].errorMessage ?? null,
         };
       }
@@ -173,6 +208,12 @@ const paperTasksSlice = createSlice({
     setSubmittingWechatPmid(state, action: PayloadAction<string | null>) {
       state.submittingWechatPmid = action.payload;
     },
+    setModelConfig(state, action: PayloadAction<PaperPipelineModelConfig>) {
+      state.modelConfig = action.payload;
+    },
+    setModelConfigSaving(state, action: PayloadAction<boolean>) {
+      state.modelConfigSaving = action.payload;
+    },
   },
 });
 
@@ -189,6 +230,8 @@ export const {
   setWechatDraft,
   closeWechatDraftModal,
   setSubmittingWechatPmid,
+  setModelConfig,
+  setModelConfigSaving,
 } = paperTasksSlice.actions;
 
 export { paperTasksSlice };

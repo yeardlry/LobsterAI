@@ -2,7 +2,7 @@ import * as fsp from 'node:fs/promises';
 
 import { net } from 'electron';
 
-import { ensurePaperPipelineDirs, getPaperPipelinePdfPath } from './storage';
+import { ensurePaperPipelineDirs, getPaperPipelineHtmlPath, getPaperPipelinePdfPath } from './storage';
 
 /**
  * PDF download strategies (Phase 3).
@@ -27,6 +27,10 @@ import { ensurePaperPipelineDirs, getPaperPipelinePdfPath } from './storage';
  *      caching and size guards apply. This is the same capability the
  *      user exercised manually in chat (see paper-pipeline screen-shots:
  *      DeepSeek returned `s41467-025-68103-7.pdf` for the user request).
+ *   5. Hidden-session agent download (Phase 7 — CLI-only, no browser)
+ *   6. Closed-access HTML fallback: when every strategy fails, save the
+ *      public landing page (PubMed abstract / Europe PMC) to
+ *      `html/<pmid>.html` and note the saved path in the error.
  *
  * The signature is the contract the orchestrator relies on:
  *   downloadPdf(input: { pmid: string }): Promise<{ localPath: string; bytes: number }>
@@ -37,23 +41,47 @@ interface DownloadStrategyResult {
   bytes: number;
 }
 
-const USER_AGENT = 'LobsterAI-PaperPipeline/1.0 (Electron)';
+/**
+ * Browser-grade User-Agent: publisher CDNs commonly answer non-browser UAs
+ * with verification pages / 403s, which used to push every download into
+ * the (heavier) agent fallback. Sending a plain Chrome UA keeps the
+ * deterministic direct-URL chains viable headlessly.
+ */
+const USER_AGENT =
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
 export async function downloadPdf(input: {
   pmid: string;
   /**
    * Optional Phase 6 LLM URL finder. When provided AND the deterministic
    * chains fail, the orchestrator will call this callback once and then
-   * route the returned URL through `downloadFromUrl` so the same size +
-   * cache guards apply. The orchestrator is responsible for closing
-   * over the real `PdfUrlFinderDeps` — this module only sees the inputs
-   * it needs to forward to the model.
+   * try every returned URL through `downloadFromUrl` (in order) until one
+   * downloads, so the same size + cache guards apply. Models often return
+   * several candidates — dead link first, working one later — hence the
+   * list. The orchestrator is responsible for closing over the real
+   * `PdfUrlFinderDeps` — this module only sees the inputs it needs to
+   * forward to the model.
    */
   findPdfUrl?: (args: {
     pmid: string;
     title?: string | null;
     abstractText?: string | null;
-  }) => Promise<string | null>;
+  }) => Promise<string[]>;
+  /**
+   * Optional Phase 7 agent download. When provided AND the URL strategies
+   * fail, the orchestrator asks a hidden Cowork session to download the
+   * PDF itself (CLI tools only — the prompt forbids browsers; the agent
+   * walks OA sources until a URL answers a direct curl download) straight
+   * to `localPath`. Returns true when the agent claims it saved the file;
+   * the downloaded file is independently verified (size + PDF magic
+   * bytes) before being accepted.
+   */
+  downloadViaAgent?: (args: {
+    pmid: string;
+    localPath: string;
+    title?: string | null;
+    abstractText?: string | null;
+  }) => Promise<boolean>;
   /** Extra context to feed the LLM finder. */
   title?: string | null;
   abstractText?: string | null;
@@ -101,41 +129,177 @@ export async function downloadPdf(input: {
     }
   }
 
-  // Strategy 4 (Phase 6): ask the LLM for a PDF URL and download it.
-  // The orchestrator wraps `findPdfUrl` so the real deps (token-proxy
-  // port + optional hidden-session hook) are passed in from the caller.
+  // Strategy 4 (Phase 6): ask the LLM for PDF URLs and try each in
+  // order. The orchestrator wraps `findPdfUrl` so the real deps
+  // (token-proxy port) are passed in from the caller. Replies often
+  // contain several candidates (dead link first, working one later) —
+  // keep going until one downloads.
   if (input.findPdfUrl) {
     try {
-      const llmUrl = await input.findPdfUrl({
+      const llmUrls = await input.findPdfUrl({
         pmid,
         title: input.title ?? undefined,
         abstractText: input.abstractText ?? undefined,
       });
-      if (llmUrl) {
-        return await downloadFromUrl({ url: llmUrl, localPath });
+      if (llmUrls.length === 0) {
+        // The finder swallows per-strategy errors into its own logs
+        // (token-proxy 401, ...). Without this the final error would
+        // read "last error: unknown", which tells the user nothing.
+        // Detailed reasons are in the [PdfUrlFinder] log lines.
+        lastError = new PaperPdfDownloadError(
+          'LLM PDF finder returned no usable URL (see [PdfUrlFinder] logs for per-strategy reasons)',
+        );
+      }
+      for (const llmUrl of llmUrls) {
+        try {
+          return await downloadFromUrl({ url: llmUrl, localPath });
+        } catch (err) {
+          lastError = err;
+        }
       }
     } catch (err) {
       lastError = err;
     }
   }
 
+  // Strategy 5 (Phase 7): let a hidden Cowork session agent download the
+  // PDF itself. The prompt restricts the agent to CLI tools (curl / wget
+  // with a browser User-Agent, NO browser/GUI) and tells it to keep
+  // walking OA sources until one answers a direct download. The agent's
+  // DOWNLOADED claim is not trusted — but we also do not REQUIRE it: the
+  // agent often does the work and answers in prose without the literal
+  // token, so the file at the target path is verified either way (size +
+  // PDF magic) before winning.
+  if (input.downloadViaAgent) {
+    try {
+      const agentClaimed = await input.downloadViaAgent({
+        pmid,
+        localPath,
+        title: input.title ?? undefined,
+        abstractText: input.abstractText ?? undefined,
+      });
+      const bytes = await verifyDownloadedPdf(localPath);
+      if (bytes !== null) {
+        return { localPath, bytes };
+      }
+      if (agentClaimed) {
+        lastError = new PaperPdfDownloadError(
+          'agent claimed DOWNLOADED but the file at the target path is not a valid PDF',
+        );
+      }
+    } catch (err) {
+      lastError = err;
+      // The turn timer can fire while the agent is between the actual
+      // download and its final one-line report — the file still lands at
+      // the target path. Verify before declaring the strategy dead
+      // (observed 2026-09-18: a 240s timeout killed a run that had just
+      // finished working; the file check never ran in the catch path).
+      try {
+        const bytes = await verifyDownloadedPdf(localPath);
+        if (bytes !== null) {
+          return { localPath, bytes };
+        }
+      } catch {
+        /* fall through to the exhausted error */
+      }
+    }
+  }
+
+  // Every PDF strategy failed. When the paper is genuinely closed access
+  // (the usual NO_PDF verdict — no OA copy anywhere, not a verification
+  // block), there is no PDF to be had, but the public landing page is
+  // still worth keeping as a local artifact. Best-effort: never masks the
+  // exhausted error, never throws on its own.
+  const htmlPath = await saveClosedAccessHtmlFallback(pmid);
+
   throw new PaperPdfDownloadError(
     `All PDF strategies exhausted for PMID ${pmid} (last error: ${
       lastError instanceof Error ? lastError.message : 'unknown'
-    }). Reset the task once a strategy is available.`,
+    }).${
+      htmlPath
+        ? ` Closed access — landing page saved to ${htmlPath}.`
+        : ' Reset the task once a strategy is available.'
+    }`,
+    { htmlPath },
   );
+}
+
+/**
+ * Ensure the closed-access landing page exists locally: reuse a previously
+ * saved `html/{pmid}.html`, else fetch it now (PubMed first, Europe PMC
+ * second). Returns the page path, or null when nothing plausible could be
+ * fetched.
+ *
+ * Used by the orchestrator when the backend already flagged the paper as
+ * closed access (`openAccess === false`, contract v1.3) — no point running
+ * the full PDF strategy chain (EuropePMC/PMC/LLM/agent, up to 300s) on a
+ * paper known to have no OA copy.
+ */
+export async function ensureClosedAccessLandingPage(pmid: string): Promise<string | null> {
+  const cachedPath = getPaperPipelineHtmlPath(pmid);
+  const cachedExists = await fsp
+    .access(cachedPath)
+    .then(() => true)
+    .catch(() => false);
+  if (cachedExists) return cachedPath;
+  return saveClosedAccessHtmlFallback(pmid);
+}
+
+/**
+ * Closed-access fallback: fetch the article's public landing page (PubMed
+ * abstract first, Europe PMC second) and save it to `html/<pmid>.html`.
+ * Returns the saved path, or null when no source produced a plausible HTML
+ * body. Swallows all errors — this runs on the exhausted-error path, where
+ * the PDF failure is the outcome that matters.
+ */
+async function saveClosedAccessHtmlFallback(pmid: string): Promise<string | null> {
+  const sources = [
+    `https://pubmed.ncbi.nlm.nih.gov/${pmid}/`,
+    `https://europepmc.org/article/MED/${pmid}`,
+  ];
+  for (const url of sources) {
+    try {
+      const response = await safeGet(url);
+      if (!response || !response.ok) continue;
+      const body = Buffer.from(await response.arrayBuffer());
+      // Plausibility guards: CAPTCHA/interstitial responses are tiny or
+      // not HTML at all. A real landing page is well over 1KB of HTML.
+      if (body.length <= 1024) continue;
+      const head = body.subarray(0, 512).toString('latin1');
+      if (!/<html[\s>]|<!doctype html/i.test(head)) continue;
+      const htmlPath = getPaperPipelineHtmlPath(pmid);
+      await fsp.writeFile(htmlPath, body);
+      console.log(`[PaperPipeline] closed-access HTML fallback saved ${pmid} → ${htmlPath} (${body.length} bytes)`);
+      return htmlPath;
+    } catch {
+      // Try the next source; the PDF error is the outcome that matters.
+    }
+  }
+  return null;
 }
 
 /**
  * Download a known PDF URL straight to the local cache. Used both by the
  * deterministic chains (after a successful `tryDirectPdf`) and by the LLM
  * URL finder.
+ *
+ * The response body must actually be a PDF: paywalls, CAPTCHAs, and
+ * "verify you are human" interstitials return HTTP 200 with an HTML body
+ * that would otherwise pass the size guard and get cached as a corrupt
+ * "PDF". Rejecting non-PDF bodies makes those URLs count as failures so
+ * the caller moves on to the next candidate.
  */
 async function downloadFromUrl(input: { url: string; localPath: string }): Promise<{
   localPath: string;
   bytes: number;
 }> {
-  await fsp.writeFile(input.localPath, await fetchBytes(input.url));
+  const body = await fetchBytes(input.url);
+  if (!isPdfBuffer(body)) {
+    throw new PaperPdfDownloadError(
+      `download from ${input.url} is not a PDF (${describeBodyHead(body)})`,
+    );
+  }
+  await fsp.writeFile(input.localPath, body);
   const stat = await fsp.stat(input.localPath);
   if (stat.size <= 1024) {
     throw new PaperPdfDownloadError(
@@ -143,6 +307,45 @@ async function downloadFromUrl(input: { url: string; localPath: string }): Promi
     );
   }
   return { localPath: input.localPath, bytes: stat.size };
+}
+
+/** PDF files start with the literal magic prefix `%PDF-`. */
+function isPdfBuffer(body: Buffer): boolean {
+  return body.subarray(0, 5).toString('latin1') === '%PDF-';
+}
+
+/**
+ * Verify a file on disk is a plausible PDF: exists, larger than 1KB, and
+ * starts with the `%PDF-` magic. Returns the size in bytes when valid,
+ * null otherwise. Used to check files the hidden-session agent claims to
+ * have downloaded — the claim alone is not evidence.
+ */
+async function verifyDownloadedPdf(localPath: string): Promise<number | null> {
+  try {
+    const stat = await fsp.stat(localPath);
+    if (stat.size <= 1024) return null;
+    const handle = await fsp.open(localPath, 'r');
+    try {
+      const head = Buffer.alloc(5);
+      await handle.read(head, 0, 5, 0);
+      if (!isPdfBuffer(head)) return null;
+    } finally {
+      await handle.close();
+    }
+    return stat.size;
+  } catch {
+    return null;
+  }
+}
+
+/** Human-readable head of a rejected body, for the error message. */
+function describeBodyHead(body: Buffer): string {
+  const head = body
+    .subarray(0, 16)
+    .toString('latin1')
+    // Non-printable bytes render as dots so the message stays loggable.
+    .replace(/[^\x20-\x7e]/g, '.');
+  return `starts with "${head}", ${body.length} bytes`;
 }
 
 /** Resolve `url`; return { url, bytes } when 2xx, null otherwise. */
@@ -225,8 +428,17 @@ function readResults(payload: unknown): Array<Record<string, unknown>> {
 }
 
 export class PaperPdfDownloadError extends Error {
-  constructor(message: string) {
+  /**
+   * Local path of the closed-access HTML landing page saved by the
+   * fallback (`html/{pmid}.html`), when one could be fetched. The
+   * orchestrator reads this to continue the pipeline on the HTML path
+   * instead of failing the task — null when no HTML was saved.
+   */
+  readonly htmlPath?: string | null;
+
+  constructor(message: string, options: { htmlPath?: string | null } = {}) {
     super(message);
     this.name = 'PaperPdfDownloadError';
+    this.htmlPath = options.htmlPath ?? null;
   }
 }

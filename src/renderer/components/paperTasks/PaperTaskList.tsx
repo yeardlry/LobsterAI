@@ -13,6 +13,12 @@ interface PaperTaskListProps {
   advancingPmid: string | null;
   onSelect: (pmid: string) => void;
   onRefresh: () => void;
+  /**
+   * Total tasks BEFORE any view-side filter. When present and larger than
+   * `tasks.length`, the list shows an "all filtered out" panel instead of
+   * the empty-state copy (which would mislead the user into refreshing).
+   */
+  totalCount?: number;
 }
 
 /**
@@ -27,6 +33,7 @@ const PaperTaskList: React.FC<PaperTaskListProps> = ({
   advancingPmid,
   onSelect,
   onRefresh,
+  totalCount,
 }) => {
   if (listStatus === PaperTasksDataStatus.Loading) {
     return (
@@ -62,6 +69,20 @@ const PaperTaskList: React.FC<PaperTaskListProps> = ({
   }
 
   if (tasks.length === 0) {
+    // The filter hid every card — distinguish from "backend returned no
+    // tasks" so the user knows refreshing won't change anything.
+    if (totalCount !== undefined && totalCount > 0) {
+      return (
+        <div className="rounded-2xl border border-border bg-surface p-8 text-center">
+          <div className="text-sm font-medium text-secondary">
+            {i18nService.t('paperTasksAllHiddenTitle')}
+          </div>
+          <div className="mt-1 text-xs text-muted">
+            {i18nService.t('paperTasksAllHiddenHint')}
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="rounded-2xl border border-border bg-surface p-8 text-center">
         <div className="text-sm font-medium text-secondary">

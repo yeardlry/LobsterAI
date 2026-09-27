@@ -2,6 +2,7 @@ import { BrowserWindow } from 'electron';
 
 import { PaperPipelineIpcChannel } from '../../shared/paperPipeline/constants';
 import type {
+  PaperPipelineModelConfig,
   PaperTaskLogEvent,
   PaperTaskStatusChangedEvent,
 } from '../../shared/paperPipeline/types';
@@ -43,6 +44,13 @@ export interface PaperPipelineServiceDeps {
    * Required iff `coworkRuntime` is provided.
    */
   resolveAgentCwd?: MaybeThunk<(agentId: string) => string>;
+  /**
+   * Reads the user's pipeline model config from the kv store. Thunk for
+   * the same init-order reason as the fields above — the main.ts wiring
+   * runs before `initStore()`. Omitted (tests) ⇒ the default
+   * smart-follow config applies.
+   */
+  getPipelineModelConfig?: () => PaperPipelineModelConfig;
 }
 
 let singleton: PaperPipelineService | null = null;
@@ -63,14 +71,20 @@ export function initPaperPipelineServiceManager(deps: PaperPipelineServiceDeps):
   installedDeps = deps;
 
   const bus = new PaperPipelineEmitterBus();
+  // `PaperPipelineClient.request` owns the lit-vs-OAuth gate now
+  // (isLitAuthSession check at the top of request()), so we no longer
+  // wrap getAccessToken here — passing it through is safe and avoids
+  // a second place where the auth state is interpreted.
   const client = new PaperPipelineClient({
     getBaseUrl: deps.getLitServerBaseUrl,
-    getAccessToken: () => (deps.isLitAuthSession() ? deps.getAccessToken() : null),
+    getAccessToken: deps.getAccessToken,
+    isLitAuthSession: deps.isLitAuthSession,
   });
   const service = new PaperPipelineService(client, bus, {
     coworkRuntime: deps.coworkRuntime,
     coworkStore: deps.coworkStore,
     resolveAgentCwd: deps.resolveAgentCwd,
+    getPipelineModelConfig: deps.getPipelineModelConfig,
   });
 
   const cleanupStatus = bus.onStatusChanged((event: PaperTaskStatusChangedEvent) => {

@@ -6,6 +6,7 @@ import { i18nService } from '../../services/i18n';
 type Status = typeof PaperPipelineProcessingStatus[keyof typeof PaperPipelineProcessingStatus];
 
 const STATUS_TONE: Record<Status, string> = {
+  [PaperPipelineProcessingStatus.Fetched]: 'bg-slate-100 text-slate-700 dark:bg-slate-900/40 dark:text-slate-200',
   [PaperPipelineProcessingStatus.XmlReady]: 'bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-200',
   [PaperPipelineProcessingStatus.Parsed]: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-200',
   [PaperPipelineProcessingStatus.Analyzed]: 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-200',
@@ -16,6 +17,7 @@ const STATUS_TONE: Record<Status, string> = {
 };
 
 const STATUS_LABEL_KEY: Record<Status, string> = {
+  [PaperPipelineProcessingStatus.Fetched]: 'paperTasksStatusFetched',
   [PaperPipelineProcessingStatus.XmlReady]: 'paperTasksStatusXmlReady',
   [PaperPipelineProcessingStatus.Parsed]: 'paperTasksStatusParsed',
   [PaperPipelineProcessingStatus.Analyzed]: 'paperTasksStatusAnalyzed',

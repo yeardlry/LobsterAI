@@ -5,6 +5,7 @@ import { i18nService } from '../../services/i18n';
 import { paperTasksService } from '../../services/paperTasks';
 import type { RootState } from '../../store';
 import type { WechatDraft } from '../../store/slices/paperTasksSlice';
+import { showToast } from '../../utils/localFileActions';
 
 const DOC_URL_PATTERN = /^https:\/\/mp\.weixin\.qq\.com\//i;
 
@@ -44,14 +45,18 @@ const PaperTaskWechatDraftModal: React.FC = () => {
   const isSubmitting = submitting === activePmid;
   const urlLooksValid = DOC_URL_PATTERN.test(docUrl.trim());
 
-  const handleOpenLocal = (): void => {
-    // The local Markdown is on the user's disk; show it in their file
-    // browser by invoking Electron's shell.openPath via a synthetic anchor.
-    // Phase 4 stub: we don't have a direct IPC for this, so just copy the
-    // path to the clipboard as a fallback hint.
-    void navigator.clipboard.writeText(draft.localPath).catch(() => {
-      /* best effort */
-    });
+  const handleOpenLocal = async (): Promise<void> => {
+    // Copy the on-disk Markdown path via the preload clipboard bridge.
+    // `navigator.clipboard` is unreliable in the sandboxed renderer and
+    // failed silently here; the IPC bridge goes through Electron's
+    // clipboard module in the main process. A toast confirms the click
+    // actually did something.
+    try {
+      await window.electron?.clipboard?.writeText(draft.localPath);
+      showToast(i18nService.t('paperTasksWechatDraftPathCopied'));
+    } catch {
+      showToast(i18nService.t('paperTasksWechatDraftPathCopyFailed'));
+    }
   };
 
   const handleOpenPublic = (): void => {
@@ -108,7 +113,9 @@ const PaperTaskWechatDraftModal: React.FC = () => {
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
-              onClick={handleOpenLocal}
+              onClick={() => {
+                void handleOpenLocal();
+              }}
               className="h-8 rounded-lg border border-border bg-surface px-3 text-xs font-medium text-secondary transition-colors hover:bg-surface-hover"
             >
               {i18nService.t('paperTasksWechatDraftCopyPath')}

@@ -8,9 +8,11 @@ type PaperTaskAnalyticsAction =
   | 'open_page'
   | 'refresh_list'
   | 'advance_task'
+  | 'advance_task_auto'
   | 'mark_failed'
   | 'reset_task'
   | 'submit_wechat_doc'
+  | 'save_model_config'
   | 'select_task';
 
 export function reportPaperTaskAction(

@@ -3,10 +3,11 @@ import { ipcMain } from 'electron';
 import { PaperPipelineIpcChannel } from '../../../shared/paperPipeline/constants';
 import {
   type PaperPipelineHandlerEnvelope,
+  type PaperPipelineModelConfig,
   PaperPipelineProcessingStatus,
-  type PaperTask,
   type PaperTaskAdvanceResult,
   type PaperTaskLogEntry,
+  type PaperTaskPage,
   type PaperTaskReportFailureRequest,
   type PaperTaskResetRequest,
   type PaperTaskSubmitWechatDocRequest,
@@ -18,6 +19,10 @@ import {
 
 export interface PaperPipelineHandlerDeps {
   isLitAuthSession: () => boolean;
+  /** Reads the pipeline model config (kv store). Local, no lit-auth gate. */
+  readPipelineModelConfig: () => PaperPipelineModelConfig;
+  /** Sanitizes + persists the pipeline model config. Local, no lit-auth gate. */
+  writePipelineModelConfig: (raw: unknown) => PaperPipelineModelConfig;
 }
 
 function envelopeOk<T>(data: T): PaperPipelineHandlerEnvelope<T> {
@@ -40,7 +45,14 @@ function envelopeError(error: string): PaperPipelineHandlerEnvelope<never> {
 export function registerPaperPipelineHandlers(deps: PaperPipelineHandlerDeps): void {
   ipcMain.handle(
     PaperPipelineIpcChannel.ListPendingTasks,
-    async (): Promise<PaperPipelineHandlerEnvelope<PaperTask[]>> => {
+    async (
+      _event,
+      payload?: { page?: number; pageSize?: number },
+    ): Promise<PaperPipelineHandlerEnvelope<PaperTaskPage>> => {
+      // Defense-in-depth: PaperPipelineClient.request() also gates on
+      // isLitAuthSession() and would throw a 401-shaped error here.
+      // We surface the same message at the IPC boundary so the renderer
+      // gets a clean envelope error instead of an orchestrator exception.
       if (!deps.isLitAuthSession()) {
         return envelopeError('Lit session required for paper pipeline');
       }
@@ -48,9 +60,14 @@ export function registerPaperPipelineHandlers(deps: PaperPipelineHandlerDeps): v
         return envelopeError('Paper pipeline service not initialized');
       }
       try {
-        const tasks = await getPaperPipelineService().listPendingTasks();
-        console.debug(`[PaperPipeline] listPendingTasks → ${tasks.length} task(s)`);
-        return envelopeOk(tasks);
+        const page = await getPaperPipelineService().listPendingTasks({
+          page: payload?.page,
+          pageSize: payload?.pageSize,
+        });
+        console.debug(
+          `[PaperPipeline] listPendingTasks → ${page.items.length}/${page.total} task(s) (page=${page.page}, pageSize=${page.pageSize})`,
+        );
+        return envelopeOk(page);
       } catch (err) {
         console.error('[PaperPipeline] listPendingTasks failed', err);
         return envelopeError(err instanceof Error ? err.message : 'listPendingTasks failed');
@@ -91,6 +108,45 @@ export function registerPaperPipelineHandlers(deps: PaperPipelineHandlerDeps): v
   );
 
   ipcMain.handle(
+    PaperPipelineIpcChannel.AdvanceTaskAuto,
+    async (
+      _event,
+      payload: {
+        pmid: string;
+        currentStatus: PaperPipelineProcessingStatus;
+        /** Contract v1.3 `openAccess` flag from the task list; optional. */
+        openAccess?: boolean | null;
+      },
+    ): Promise<PaperPipelineHandlerEnvelope<PaperTaskAdvanceResult>> => {
+      if (!deps.isLitAuthSession()) {
+        return envelopeError('Lit session required for paper pipeline');
+      }
+      if (!isPaperPipelineServiceInitialized()) {
+        return envelopeError('Paper pipeline service not initialized');
+      }
+      if (!payload?.pmid || !payload?.currentStatus) {
+        return envelopeError('advanceTaskAuto requires { pmid, currentStatus }');
+      }
+      try {
+        const result = await getPaperPipelineService().advanceTaskAuto(
+          payload.pmid,
+          payload.currentStatus,
+          undefined,
+          { openAccess: payload.openAccess ?? null },
+        );
+        return envelopeOk(result);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'advanceTaskAuto failed';
+        console.error(
+          `[PaperPipeline] advanceTaskAuto ${payload.pmid} from ${payload.currentStatus} failed`,
+          err,
+        );
+        return envelopeError(message);
+      }
+    },
+  );
+
+  ipcMain.handle(
     PaperPipelineIpcChannel.ReportFailure,
     async (
       _event,
@@ -102,8 +158,8 @@ export function registerPaperPipelineHandlers(deps: PaperPipelineHandlerDeps): v
       if (!isPaperPipelineServiceInitialized()) {
         return envelopeError('Paper pipeline service not initialized');
       }
-      if (!payload?.pmid || !payload?.errorMessage) {
-        return envelopeError('reportFailure requires { pmid, errorMessage }');
+      if (!payload?.pmid || !payload?.errorMsg) {
+        return envelopeError('reportFailure requires { pmid, errorMsg }');
       }
       try {
         const result = await getPaperPipelineService().reportFailure(payload);
@@ -133,7 +189,7 @@ export function registerPaperPipelineHandlers(deps: PaperPipelineHandlerDeps): v
       try {
         const result = await getPaperPipelineService().reportFailure({
           pmid: payload.pmid,
-          errorMessage: 'Manually reset from UI',
+          errorMsg: 'Manually reset from UI',
           markAsFailed: false,
           resetTo: payload.resetTo ?? 'xml_ready',
         });
@@ -162,6 +218,55 @@ export function registerPaperPipelineHandlers(deps: PaperPipelineHandlerDeps): v
         return envelopeOk(log);
       } catch (err) {
         return envelopeError(err instanceof Error ? err.message : 'getTaskLog failed');
+      }
+    },
+  );
+
+  /**
+   * Renderer → main: read the pipeline model config. Purely local (kv
+   * store) — no lit-auth and no service-init gate, mirroring the
+   * GetTaskLog local-only precedent.
+   */
+  ipcMain.handle(
+    PaperPipelineIpcChannel.GetModelConfig,
+    async (): Promise<PaperPipelineHandlerEnvelope<PaperPipelineModelConfig>> => {
+      try {
+        return envelopeOk(deps.readPipelineModelConfig());
+      } catch (err) {
+        console.error('[PaperPipeline] getModelConfig failed', err);
+        return envelopeError(err instanceof Error ? err.message : 'getModelConfig failed');
+      }
+    },
+  );
+
+  /**
+   * Renderer → main: persist the pipeline model config. Field-level shape
+   * validation here; deep sanitization (ref shape, fallbacks) lives in
+   * `sanitizePaperPipelineModelConfig` via the write thunk.
+   */
+  ipcMain.handle(
+    PaperPipelineIpcChannel.SetModelConfig,
+    async (
+      _event,
+      payload: { pipelineModel?: unknown; pdfUrlSuggestModel?: unknown },
+    ): Promise<PaperPipelineHandlerEnvelope<PaperPipelineModelConfig>> => {
+      const isValidField = (value: unknown): boolean =>
+        value === undefined || typeof value === 'string';
+      if (
+        !payload
+        || typeof payload !== 'object'
+        || !isValidField(payload.pipelineModel)
+        || !isValidField(payload.pdfUrlSuggestModel)
+      ) {
+        return envelopeError(
+          'setModelConfig requires { pipelineModel, pdfUrlSuggestModel } as strings',
+        );
+      }
+      try {
+        return envelopeOk(deps.writePipelineModelConfig(payload));
+      } catch (err) {
+        console.error('[PaperPipeline] setModelConfig failed', err);
+        return envelopeError(err instanceof Error ? err.message : 'setModelConfig failed');
       }
     },
   );

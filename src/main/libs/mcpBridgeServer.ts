@@ -60,6 +60,25 @@ export type MediaGenerationResponse = {
   details?: Record<string, unknown>;
 };
 
+/**
+ * Paper-pipeline tool handlers (the `lobsterai-paper` MCP server calls
+ * back through these). Every handler returns a JSON-serializable value
+ * that the bridge wraps into a tool-result `{ content, isError? }` shape;
+ * thrown errors become `isError: true` results. Handlers are resolved
+ * lazily per request via the provider so the paper pipeline service
+ * manager can initialize after the bridge has already started.
+ */
+export interface PaperPipelineBridgeHandlers {
+  /** Refresh the pending task list from the lit backend. */
+  listPendingTasks: () => Promise<unknown>;
+  /** Start an autopilot batch (refresh + one-click advance). */
+  startAutopilot: () => Promise<unknown>;
+  /** Query autopilot batch progress; `jobId` optional. */
+  autopilotStatus: (jobId?: string) => Promise<unknown>;
+}
+
+export type PaperPipelineBridgeProvider = () => PaperPipelineBridgeHandlers | null;
+
 export class McpBridgeServer {
   private server: http.Server | null = null;
   private _port: number | null = null;
@@ -68,6 +87,7 @@ export class McpBridgeServer {
   private onAskUserCallback: ((request: AskUserRequest) => void) | null = null;
   private onAskUserDismissCallback: ((requestId: string) => void) | null = null;
   private onMediaGenerationCallback: ((request: MediaGenerationRequest) => Promise<MediaGenerationResponse>) | null = null;
+  private paperPipelineProvider: PaperPipelineBridgeProvider | null = null;
 
   constructor(secret: string) {
     this.secret = secret;
@@ -84,6 +104,11 @@ export class McpBridgeServer {
 
   get mediaCallbackUrl(): string | null {
     return this._port ? `http://127.0.0.1:${this._port}/media-generation/tool` : null;
+  }
+
+  /** Base URL the `lobsterai-paper` MCP server calls back on. */
+  get bridgeBaseUrl(): string | null {
+    return this._port ? `http://127.0.0.1:${this._port}` : null;
   }
 
   /**
@@ -108,6 +133,15 @@ export class McpBridgeServer {
    */
   onMediaGeneration(callback: (request: MediaGenerationRequest) => Promise<MediaGenerationResponse>): void {
     this.onMediaGenerationCallback = callback;
+  }
+
+  /**
+   * Register the lazy provider for paper-pipeline tool requests. Called on
+   * every request so the handlers can appear once the paper pipeline
+   * service manager initializes (which may happen after bridge start).
+   */
+  onPaperPipeline(provider: PaperPipelineBridgeProvider): void {
+    this.paperPipelineProvider = provider;
   }
 
   /**
@@ -239,6 +273,11 @@ export class McpBridgeServer {
       return;
     }
 
+    if (req.url?.startsWith('/paper/pipeline/')) {
+      await this.handlePaperPipeline(req, res);
+      return;
+    }
+
     res.writeHead(404, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'Not found' }));
   }
@@ -347,6 +386,68 @@ export class McpBridgeServer {
       if (!res.writableEnded) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ content: [{ type: 'text', text: `Media generation error: ${errMsg}` }], isError: true }));
+      }
+    }
+  }
+
+  /**
+   * `lobsterai-paper` MCP server endpoints:
+   *   POST /paper/pipeline/pending-tasks
+   *   POST /paper/pipeline/autopilot/start
+   *   POST /paper/pipeline/autopilot/status   (optional body { jobId })
+   * The tool result shape matches `MediaGenerationResponse` so the .mjs
+   * shim can forward the bridge reply as the MCP tool result verbatim.
+   */
+  private async handlePaperPipeline(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    const route = req.url ?? '';
+    try {
+      const handlers = this.paperPipelineProvider?.() ?? null;
+      if (!handlers) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          content: [{ type: 'text', text: 'Paper pipeline service is not initialized yet.' }],
+          isError: true,
+        }));
+        return;
+      }
+
+      let result: unknown;
+      if (route.startsWith('/paper/pipeline/pending-tasks')) {
+        result = await handlers.listPendingTasks();
+      } else if (route.startsWith('/paper/pipeline/autopilot/start')) {
+        result = await handlers.startAutopilot();
+      } else if (route.startsWith('/paper/pipeline/autopilot/status')) {
+        const body = await this.readBody(req);
+        let jobId: string | undefined;
+        try {
+          const parsed = JSON.parse(body) as { jobId?: unknown };
+          if (typeof parsed.jobId === 'string' && parsed.jobId.trim()) {
+            jobId = parsed.jobId.trim();
+          }
+        } catch {
+          /* empty body — query the current/last run */
+        }
+        result = await handlers.autopilotStatus(jobId);
+      } else {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Not found' }));
+        return;
+      }
+
+      log('INFO', `Paper pipeline route ${route} completed`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+      }));
+    } catch (error) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      log('ERROR', `Paper pipeline route ${route} failed: ${errMsg}`);
+      if (!res.writableEnded) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          content: [{ type: 'text', text: `Paper pipeline error: ${errMsg}` }],
+          isError: true,
+        }));
       }
     }
   }

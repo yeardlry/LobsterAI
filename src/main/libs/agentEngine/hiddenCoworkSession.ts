@@ -62,8 +62,33 @@ export interface HiddenCoworkSessionDeps {
 
 export interface HiddenCoworkSessionInput {
   prompt: string;
+  /**
+   * Continue an existing session instead of creating a fresh one. When the
+   * store no longer knows this id (database cleared, different machine) a
+   * new session is created transparently. Used by the paper pipeline to
+   * keep one session per task across multiple steps (PDF download →
+   * article draft → word export) so the agent keeps its context.
+   */
+  sessionId?: string;
   /** Agent ID to drive. Defaults to `'main'`. */
   agentId?: string;
+  /**
+   * Session-level model override (provider-qualified ref, e.g.
+   * `'deepseek/deepseek-v4-flash'`). `undefined` leaves the session row's
+   * override untouched (legacy callers); a string — including `''` —
+   * enforces that value, where `''` clears the override so the agent's own
+   * binding wins again. The runtime resolves `session.modelOverride ||
+   * agent.model` on every turn (openclawRuntimeAdapter.ts:5362).
+   */
+  modelOverride?: string;
+  /**
+   * Full title for the created session row (visible in session lists /
+   * logs). Defaults to `[hidden] <8-char uuid>`. Callers that know what
+   * the session is FOR should pass something identifiable, e.g. the paper
+   * pipeline uses `[hidden] PMID {pmid}` so hidden sessions can be told
+   * apart in the store. Ignored when continuing an existing session.
+   */
+  sessionTitle?: string;
   /** Override the agent's default working directory. */
   cwd?: string;
   /** Optional system-prompt injection. */
@@ -118,24 +143,73 @@ export async function runHiddenCoworkSession(
     );
   }
 
-  // 1) Pre-create the SQLite row. The runtime throws if the row is
+  // 1) Resolve the session. When the caller passes a live `sessionId` we
+  //    continue it (the agent keeps its conversation history); otherwise
+  //    pre-create the SQLite row — the runtime throws if the row is
   //    missing (openclawRuntimeAdapter.ts:5270).
-  const session = deps.store.createSession(
-    `[hidden] ${randomUUID().slice(0, 8)}`,
-    cwd,
-    input.systemPrompt ?? '',
-    'local',
-    input.skillIds ?? [],
-    agentId,
-  );
-  const sessionId = session.id;
-  log('info', `hiddenCoworkSession: created session ${sessionId}`);
+  let sessionId = input.sessionId?.trim() ?? '';
+  let reused = false;
+  let priorMessageCount = 0;
+  if (sessionId) {
+    const existing = deps.store.getSession(sessionId);
+    if (existing) {
+      reused = true;
+      priorMessageCount = existing.messages?.length ?? 0;
+      log(
+        'info',
+        `hiddenCoworkSession: continuing session ${sessionId} (${priorMessageCount} prior message(s))`,
+      );
+      // Pooled sessions persist across steps, so a config change made
+      // between steps must re-apply here — the runtime re-reads the
+      // override every turn, and `updateSession` whitelists the field.
+      if (
+        input.modelOverride !== undefined
+        && existing.modelOverride !== input.modelOverride
+      ) {
+        deps.store.updateSession(sessionId, { modelOverride: input.modelOverride });
+        log(
+          'info',
+          `hiddenCoworkSession: session ${sessionId} model override updated to "${input.modelOverride || '(cleared)'}"`,
+        );
+      }
+    } else {
+      // Stale id — the store no longer knows this session. Fall through
+      // to creating a fresh one rather than failing the whole step.
+      log('warn', `hiddenCoworkSession: session ${sessionId} not found in store, creating a new one`);
+      sessionId = '';
+    }
+  }
+  if (!reused) {
+    const title = (input.sessionTitle ?? '').trim() || `[hidden] ${randomUUID().slice(0, 8)}`;
+    const session = deps.store.createSession(
+      title,
+      cwd,
+      input.systemPrompt ?? '',
+      'local',
+      input.skillIds ?? [],
+      agentId,
+      input.modelOverride ?? '',
+    );
+    sessionId = session.id;
+    log('info', `hiddenCoworkSession: created session ${sessionId} (${title})`);
+  }
 
-  // 2) Drive one turn. Capture last assistant text via the runtime
-  //    `message` event; fall back to reading persisted messages after
-  //    `complete` so we cover the segment-after-tool-call case too.
+  // 2) Drive one turn. Prefer the persisted message rows (sliced to this
+  //    turn) for the final text; fall back to streaming capture when the
+  //    store slice comes up empty — which it does for CONTINUED sessions
+  //    (observed in production 2026-09-17: every continued turn reports
+  //    0 new segments because the adapter's history sync rewrites the row).
+  //
+  //    Streaming capture must listen to BOTH `message` and `messageUpdate`:
+  //    the adapter creates the assistant row with its first chunk
+  //    (`message`) and finalizes the content via `messageUpdate`. Listening
+  //    to `message` alone captured only that first chunk — observed as 3-8
+  //    char fragments ("CAT" for a `CATEGORIES: …` reply, an 8-char slice
+  //    of a download report) that broke the callers' DONE / DOWNLOADED
+  //    detection.
   const turnPromise = new Promise<HiddenCoworkSessionResult>((resolve, reject) => {
-    let lastAssistant = '';
+    let lastAssistantMessageId: string | null = null;
+    let lastAssistantText = '';
     let settled = false;
     const settle = (fn: () => void) => {
       if (settled) return;
@@ -143,6 +217,7 @@ export async function runHiddenCoworkSession(
       clearTimeout(timer);
       try {
         deps.runtime.off('message', onMessage);
+        deps.runtime.off('messageUpdate', onMessageUpdate);
         deps.runtime.off('complete', onComplete);
         deps.runtime.off('error', onError);
         deps.runtime.off('permissionRequest', onPermission);
@@ -154,15 +229,24 @@ export async function runHiddenCoworkSession(
 
     const onMessage = (_id: string, message: CoworkMessage) => {
       if (message.type === 'assistant') {
-        lastAssistant = message.content;
+        lastAssistantMessageId = message.id;
+        lastAssistantText = message.content;
+      }
+    };
+    const onMessageUpdate = (_id: string, messageId: string, content: string) => {
+      if (messageId && messageId === lastAssistantMessageId) {
+        lastAssistantText = content;
       }
     };
     const onComplete = () => {
       const sessionRow = deps.store.getSession(sessionId);
+      // For a continued session, only the messages appended by THIS turn
+      // count — prior turns were already returned by their own runs.
       const segments = (sessionRow?.messages ?? [])
+        .slice(priorMessageCount)
         .filter(m => m.type === 'assistant')
         .map(m => m.content);
-      const finalText = segments.join('\n\n').trim() || lastAssistant;
+      const finalText = segments.join('\n\n').trim() || lastAssistantText.trim();
       settle(() =>
         resolve({
           sessionId,
@@ -182,6 +266,7 @@ export async function runHiddenCoworkSession(
     };
 
     deps.runtime.on('message', onMessage);
+    deps.runtime.on('messageUpdate', onMessageUpdate);
     deps.runtime.on('complete', onComplete);
     deps.runtime.on('error', onError);
     deps.runtime.on('permissionRequest', onPermission);
@@ -196,22 +281,26 @@ export async function runHiddenCoworkSession(
       );
     }, timeoutMs);
 
-    deps.runtime
-      .startSession(sessionId, input.prompt, {
+    const start = reused
+      ? deps.runtime.continueSession(sessionId, input.prompt, {
+        systemPrompt: input.systemPrompt,
+        skillIds: input.skillIds,
+      })
+      : deps.runtime.startSession(sessionId, input.prompt, {
         agentId,
         confirmationMode: 'text',
         systemPrompt: input.systemPrompt,
         skillIds: input.skillIds,
-      })
-      .catch(err => {
-        settle(() =>
-          reject(
-            err instanceof Error
-              ? err
-              : new Error(`hiddenCoworkSession startSession rejected: ${String(err)}`),
-          ),
-        );
       });
+    start.catch(err => {
+      settle(() =>
+        reject(
+          err instanceof Error
+            ? err
+            : new Error(`hiddenCoworkSession ${reused ? 'continueSession' : 'startSession'} rejected: ${String(err)}`),
+        ),
+      );
+    });
   });
 
   // 3) Stop the session. Safe to call after `complete`/`error` — it

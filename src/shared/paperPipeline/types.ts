@@ -1,4 +1,5 @@
 import {
+  LitAccessStatus as LitAccessStatusValue,
   PaperPipelineAdvanceAction as PaperPipelineAdvanceActionValue,
   PaperPipelineProcessingStatus as PaperPipelineProcessingStatusValue,
 } from './constants';
@@ -11,16 +12,52 @@ export const PaperPipelineAdvanceAction = PaperPipelineAdvanceActionValue;
 export type PaperPipelineAdvanceAction = typeof PaperPipelineAdvanceActionValue[keyof typeof PaperPipelineAdvanceActionValue];
 export const PaperPipelineProcessingStatus = PaperPipelineProcessingStatusValue;
 export type PaperPipelineProcessingStatus = typeof PaperPipelineProcessingStatusValue[keyof typeof PaperPipelineProcessingStatusValue];
+export const LitAccessStatus = LitAccessStatusValue;
+export type LitAccessStatus = typeof LitAccessStatusValue[keyof typeof LitAccessStatusValue];
 
 /**
- * Paper task shape as returned by `/lit/listPendingTasks`.
- * Only the fields LobsterAI needs to drive the state machine are typed.
+ * Paper task shape as returned by `/lit/listPendingTasks` per the
+ * authoritative contract ([MRnaLnpLiterature MCP接口权威契约 §5.1](file:///Users/yeardlryng/Project/Java/MRnaLnpLiterature/docs/MCP%E6%8E%A5%E5%8F%A3%E6%9D%83%E5%A8%81%E5%A5%97%E7%BA%A6.md)).
+ *
+ * The contract returns `processingStatus` (LobsterAI used to call this
+ * `status` — renamed 2026-08-26 to match the wire format).
  */
 export interface PaperTask {
+  /** Server-side primary key. */
+  id?: number | string | null;
   pmid: string;
   title?: string | null;
-  status: PaperPipelineProcessingStatus;
-  /** Optional failure reason — populated when status === 'failed'. */
+  /** Current processing state (matches `PaperPipelineProcessingStatus` enum). */
+  processingStatus: PaperPipelineProcessingStatus;
+  /** Publication date from PubMed, ISO-8601 string. */
+  publishDate?: string | null;
+  doi?: string | null;
+  /** True iff `literature.xml_url` is non-empty on the server. */
+  xmlReady?: boolean | null;
+  /** True iff `literature.pdf_url` is non-empty on the server. */
+  pdfReady?: boolean | null;
+  /**
+   * `literature.access_status` — 'public' (PMCID present) or 'private'.
+   * Contract v1.3 (2026-09-19).
+   */
+  accessStatus?: LitAccessStatus | null;
+  /**
+   * True = OA PDF downloadable; false = closed access, the pipeline uses
+   * the HTML landing page (`submitFile(html)`). Drives the download-chain
+   * short-circuit so known-closed papers skip the doomed PDF attempts.
+   * Contract v1.3 (2026-09-19); null when the backend predates it.
+   */
+  openAccess?: boolean | null;
+  /**
+   * True iff `literature.ext_summary` is non-empty on the server.
+   * Contract v1.6 (2026-09-24); undefined when the backend predates it.
+   */
+  extSummaryReady?: boolean | null;
+  /** `literature_category` relation count. Contract v1.6 (2026-09-24). */
+  categoryCount?: number | null;
+  /** `literature_tag` relation count. Contract v1.6 (2026-09-24). */
+  tagCount?: number | null;
+  /** Optional failure reason — populated when `processingStatus === 'failed'`. */
   errorMessage?: string | null;
   /** Server timestamp of the last status transition. */
   updatedAt?: string | null;
@@ -62,6 +99,21 @@ export interface PaperTaskAdvanceRequest {
   pmid: string;
 }
 
+/**
+ * Page of pending paper tasks as returned by `/lit/listPendingTasks`.
+ * Mirrors the RuoYi paginated envelope — total / page / pageSize let the
+ * renderer render a "上一页 / 下一页 / 共 N 条" pager without re-fetching
+ * just to know how big the dataset is.
+ *
+ * See MRnaLnpLiterature MCP接口权威契约 §5.1.
+ */
+export interface PaperTaskPage {
+  items: PaperTask[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
 export interface PaperTaskAdvanceResult {
   pmid: string;
   /** Status *before* the step ran. */
@@ -86,13 +138,22 @@ export interface PaperTaskAdvanceResult {
 export interface PaperTaskSubmitWechatDocRequest {
   pmid: string;
   docUrl: string;
-  /** Optional extras to forward (e.g. the OSS markdown URL for traceability). */
+  /**
+   * Optional extras to forward (e.g. the OSS markdown URL for traceability).
+   * Wire format per contract §5.7 is a **JSON string**, not a map — the
+   * paper-pipeline client serialises this property before sending.
+   */
   extras?: Record<string, unknown>;
 }
 
 export interface PaperTaskReportFailureRequest {
   pmid: string;
-  errorMessage: string;
+  /**
+   * Free-form error description (server logs only; not length-validated).
+   * Wire name is `errorMsg` per contract §5.8 — the client (and renderer
+   * service) translate to/from this property.
+   */
+  errorMsg: string;
   /** When true the server marks the task as `failed`. When false the task is reset. */
   markAsFailed: boolean;
   /** Required when `markAsFailed === false`; defaults to `xml_ready`. */
@@ -109,6 +170,37 @@ export interface PaperPipelineHandlerEnvelope<T> {
   success: boolean;
   data?: T;
   error?: string;
+}
+
+/**
+ * User-configurable model selection for the paper pipeline, edited on the
+ * Paper Tasks page and persisted in the main-process kv store.
+ *
+ * Values are provider-qualified model refs (e.g.
+ * `'deepseek/deepseek-v4-flash'`, `'lobsterai-server/deepseek-v4-flash'`).
+ *
+ * Known limitation (out of scope): subagents spawned INSIDE the pipeline's
+ * hidden Cowork sessions use OpenClaw's `agents.defaults.model.primary`
+ * (the global default model) and cannot be overridden per-session from
+ * LobsterAI today.
+ */
+export interface PaperPipelineModelConfig {
+  /**
+   * Model override for every hidden-session LLM step of one-click advance
+   * and scheduled-task autopilot (analysis, categorization, PDF download,
+   * fulltext-md, WeChat draft, word export).
+   *
+   * `''` = smart follow: use the driving agent's binding, except that a
+   * DeepSeek-family reasoner model (`deepseek-reasoner` / `deepseek-r1`)
+   * is swapped for `deepseek-v4-flash` within the same provider. Other
+   * providers are never cross-overridden.
+   */
+  pipelineModel: string;
+  /**
+   * Model for the token-proxy PDF-URL-suggestion chat completion.
+   * `''` = `DEFAULT_PDF_URL_SUGGEST_MODEL`.
+   */
+  pdfUrlSuggestModel: string;
 }
 
 /** Payload pushed via `paperPipeline:statusChanged`. */

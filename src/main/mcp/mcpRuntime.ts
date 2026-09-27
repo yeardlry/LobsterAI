@@ -19,6 +19,12 @@ import { OpenClawConfigImpact } from '../libs/openclawConfigImpact';
 import type { ResolvedMcpServer } from '../libs/openclawConfigSync';
 import { resolveLocalDesktopCoworkSessionIdByOpenClawSessionKey } from '../libs/openclawLocalSessionResolver';
 import { resolveStdioCommand } from '../libs/resolveStdioCommand';
+import { buildPaperPipelineBridgeHandlers } from '../paperPipeline/autoPilot';
+import { resolvePaperPipelineMcpServer } from '../paperPipeline/paperPipelineMcpServer';
+import {
+  getPaperPipelineService,
+  isPaperPipelineServiceInitialized,
+} from '../paperPipeline/paperPipelineServiceManager';
 import type { SqliteStore } from '../sqliteStore';
 import { createMcpLaunchSourceFingerprint, McpLaunchResolutionStatus } from './mcpLaunchResolution';
 import { McpLaunchResolverManager } from './mcpLaunchResolverManager';
@@ -192,6 +198,17 @@ export class McpRuntime {
         };
       }
       return await this.mediaGenerationHandler(request);
+    });
+
+    // `lobsterai-paper` MCP tools → paper-pipeline autopilot. Resolved
+    // lazily per request: the service manager may initialize after the
+    // bridge (and re-initialize on lit re-login).
+    this.bridgeServer.onPaperPipeline(() => {
+      if (!isPaperPipelineServiceInitialized()) return null;
+      return buildPaperPipelineBridgeHandlers({
+        isLitAuthSession: this.deps.isLitAuthSession,
+        service: getPaperPipelineService(),
+      });
     });
   }
 
@@ -376,6 +393,22 @@ export class McpRuntime {
     if (computerUseServer) {
       resolved.push(computerUseServer);
       builtInCount++;
+    }
+
+    // Built-in paper-pipeline server (scheduled-task agents call these
+    // tools to refresh the lit todo list and run the one-click advance).
+    // Only registered once the service manager is initialized — otherwise
+    // every agent session would see dead tools.
+    if (isPaperPipelineServiceInitialized()) {
+      const paperServer = resolvePaperPipelineMcpServer({
+        bridgeBaseUrl: this.bridgeServer?.bridgeBaseUrl ?? null,
+        bridgeSecret: this.bridgeSecret,
+        electronNodePath: electronPath,
+      });
+      if (paperServer) {
+        resolved.push(paperServer);
+        builtInCount++;
+      }
     }
 
     console.log(

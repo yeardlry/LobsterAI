@@ -12,6 +12,8 @@ const ROOT_DIRNAME = 'paperPipeline';
 const PDF_DIRNAME = 'pdfs';
 const XML_DIRNAME = 'xml';
 const WECHAT_DIRNAME = 'wechat';
+const HTML_DIRNAME = 'html';
+const FULLTEXT_DIRNAME = 'fulltext';
 
 let resolvedRoot: string | null = null;
 
@@ -35,6 +37,14 @@ export function getPaperPipelineXmlDir(): string {
 
 export function getPaperPipelineWechatDir(): string {
   return path.join(getPaperPipelineRootDir(), WECHAT_DIRNAME);
+}
+
+export function getPaperPipelineHtmlDir(): string {
+  return path.join(getPaperPipelineRootDir(), HTML_DIRNAME);
+}
+
+export function getPaperPipelineFulltextDir(): string {
+  return path.join(getPaperPipelineRootDir(), FULLTEXT_DIRNAME);
 }
 
 /**
@@ -69,9 +79,34 @@ export function getPaperPipelineXmlPath(pmid: string): string {
   return path.join(getPaperPipelineXmlDir(), `${safe}.xml`);
 }
 
+/**
+ * Landing-page HTML cached for closed-access papers: when no OA PDF exists
+ * anywhere, the pipeline still saves the article's public landing page
+ * (PubMed abstract / Europe PMC) to `html/<pmid>.html` so the user has a
+ * local artifact for the paper.
+ */
+export function getPaperPipelineHtmlPath(pmid: string): string {
+  const safe = pmid.replace(/[^a-zA-Z0-9._-]/g, '_');
+  return path.join(getPaperPipelineHtmlDir(), `${safe}.html`);
+}
+
+/**
+ * Local full-text Markdown converted from the downloaded PDF (or the
+ * closed-access HTML landing page) so the analysis step can cite
+ * body-level data. Local-only analysis input — unlike the WeChat draft
+ * (`wechat/`, uploaded to OSS as `md/{pmid}.md`), this file is never
+ * uploaded anywhere.
+ */
+export function getPaperPipelineFulltextMdPath(pmid: string): string {
+  const safe = pmid.replace(/[^a-zA-Z0-9._-]/g, '_');
+  return path.join(getPaperPipelineFulltextDir(), `${safe}.md`);
+}
+
 /** Make sure the directory tree exists; idempotent. */
 export async function ensurePaperPipelineDirs(): Promise<void> {
   await fsp.mkdir(getPaperPipelinePdfDir(), { recursive: true });
   await fsp.mkdir(getPaperPipelineXmlDir(), { recursive: true });
   await fsp.mkdir(getPaperPipelineWechatDir(), { recursive: true });
+  await fsp.mkdir(getPaperPipelineHtmlDir(), { recursive: true });
+  await fsp.mkdir(getPaperPipelineFulltextDir(), { recursive: true });
 }

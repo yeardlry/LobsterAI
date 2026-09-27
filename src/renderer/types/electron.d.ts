@@ -82,10 +82,11 @@ import type {
   OpenClawGatewayRepairErrorCode,
 } from '../../shared/openclawEngine/constants';
 import type {
+  PaperPipelineModelConfig,
   PaperPipelineProcessingStatus,
-  PaperTask,
   PaperTaskAdvanceResult,
   PaperTaskLogEntry,
+  PaperTaskPage,
   PaperTaskStatusChangedEvent,
 } from '../../shared/paperPipeline/types';
 import type {
@@ -696,9 +697,9 @@ interface IElectronAPI {
     onChanged: (callback: () => void) => () => void;
   };
   paperPipeline: {
-    listPendingTasks: () => Promise<{
+    listPendingTasks: (payload?: { page?: number; pageSize?: number }) => Promise<{
       success: boolean;
-      data?: PaperTask[];
+      data?: PaperTaskPage;
       error?: string;
     }>;
     advanceTask: (
@@ -709,9 +710,19 @@ interface IElectronAPI {
       data?: PaperTaskAdvanceResult;
       error?: string;
     }>;
+    advanceTaskAuto: (
+      pmid: string,
+      currentStatus: PaperPipelineProcessingStatus,
+      /** Contract v1.3 `openAccess` flag; false = closed access. */
+      openAccess?: boolean | null,
+    ) => Promise<{
+      success: boolean;
+      data?: PaperTaskAdvanceResult;
+      error?: string;
+    }>;
     reportFailure: (payload: {
       pmid: string;
-      errorMessage: string;
+      errorMsg: string;
       markAsFailed: boolean;
       resetTo?: PaperPipelineProcessingStatus;
     }) => Promise<{
@@ -730,6 +741,19 @@ interface IElectronAPI {
     getTaskLog: (pmid: string) => Promise<{
       success: boolean;
       data?: PaperTaskLogEntry[];
+      error?: string;
+    }>;
+    getModelConfig: () => Promise<{
+      success: boolean;
+      data?: PaperPipelineModelConfig;
+      error?: string;
+    }>;
+    setModelConfig: (config: {
+      pipelineModel: string;
+      pdfUrlSuggestModel: string;
+    }) => Promise<{
+      success: boolean;
+      data?: PaperPipelineModelConfig;
       error?: string;
     }>;
     submitWechatDoc: (payload: {
