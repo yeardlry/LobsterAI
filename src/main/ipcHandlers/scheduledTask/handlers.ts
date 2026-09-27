@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import { ipcMain } from 'electron';
 
 import {
@@ -7,6 +9,7 @@ import {
   SessionTarget as STSessionTarget,
 } from '../../../scheduledTask/constants';
 import type { CronJobService } from '../../../scheduledTask/cronJobService';
+import type { ScheduledTaskMetaStore } from '../../../scheduledTask/metaStore';
 import type {
   ScheduledTask,
   ScheduledTaskDelivery,
@@ -130,6 +133,19 @@ export interface ScheduledTaskHandlerDeps {
       options?: { sessionId?: string | null },
     ) => Promise<unknown>;
   } | null;
+  /**
+   * Local scheduled-task metadata (origin/binding + per-task skills
+   * selection backing the synthetic agent). Never null in production.
+   */
+  getMetaStore: () => ScheduledTaskMetaStore;
+  /**
+   * Fire an OpenClaw config sync when the synthetic agents list changes
+   * (same pattern the agent CRUD handlers use).
+   */
+  syncOpenClawConfig: (options: {
+    reason: string;
+    restartGatewayIfRunning?: boolean;
+  }) => Promise<{ success: boolean; changed: boolean }>;
 }
 
 /** Structural view of the OpenClaw gateway client needed for session lookups. */
@@ -541,6 +557,109 @@ async function ensureScheduledTaskGatewayClient(
   return Boolean(adapter.getGatewayClient());
 }
 
+/**
+ * Pull `skillIds` out of a create/update input. Returns `undefined` when the
+ * request does not manage skills (leave existing meta untouched) so older
+ * callers / programmatic flows stay unaffected.
+ */
+export function extractSkillIds(input: Record<string, any>): string[] | undefined {
+  const skillIds = input.skillIds;
+  if (!Array.isArray(skillIds)) return undefined;
+  delete input.skillIds;
+  return skillIds.filter((id: unknown): id is string => typeof id === 'string' && id.trim() !== '');
+}
+
+/** Stable slug for the per-task synthetic agent. */
+function buildSyntheticAgentId(): string {
+  return `task-agent-${randomUUID().slice(0, 8)}`;
+}
+
+/**
+ * Bind a task's skills selection to a derived synthetic agent and persist it
+ * in the local meta store. Must run BEFORE addJob/updateJob so the agentId
+ * lands in the same gateway call.
+ *
+ * Returns `configChanged` (the OpenClaw config needs a re-sync) and, on
+ * create, the minted `pendingSkillAgent` to persist once the gateway
+ * assigns the job id.
+ *
+ * Precedence: an explicit skills selection overrides any auto-bound
+ * agentId (announce normalization) — it is the user's explicit choice.
+ */
+function applyTaskSkillsSelection(options: {
+  metaStore: ScheduledTaskMetaStore;
+  input: Record<string, any>;
+  /** Gateway job id; null on create (agent id is minted fresh). */
+  taskId: string | null;
+}): { configChanged: boolean; pendingSkillAgent?: { agentId: string; skillIds: string[] } } {
+  const { metaStore, input, taskId } = options;
+  const skillIds = extractSkillIds(input);
+  if (skillIds === undefined) return { configChanged: false };
+
+  if (skillIds.length > 0) {
+    const existing = taskId ? metaStore.getAgent(taskId) : null;
+    const agentId = existing?.agentId ?? buildSyntheticAgentId();
+    input.agentId = agentId;
+    if (taskId) {
+      metaStore.setAgent(taskId, {
+        agentId,
+        taskName: typeof input.name === 'string' && input.name.trim() ? input.name.trim() : agentId,
+        skillIds,
+      });
+      return { configChanged: true };
+    }
+    return { configChanged: false, pendingSkillAgent: { agentId, skillIds } };
+  }
+
+  // Skills cleared: drop the synthetic agent. Only reset the job's agentId
+  // when the user did not explicitly pick another agent in the same request.
+  const existing = taskId ? metaStore.getAgent(taskId) : null;
+  if (!existing) return { configChanged: false };
+  metaStore.setAgent(taskId, null);
+  if (!input.agentId || input.agentId === existing.agentId) {
+    input.agentId = null;
+  }
+  return { configChanged: true };
+}
+
+/**
+ * After a successful create/update: persist pending create-time skills meta
+ * (the job id only exists now), then trigger a config sync when the
+ * synthetic agents list changed. Also enriches the returned task with
+ * `agentSkillIds` so the renderer round-trips the selection.
+ */
+function finalizeTaskSkills(options: {
+  metaStore: ScheduledTaskMetaStore;
+  syncOpenClawConfig: ScheduledTaskHandlerDeps['syncOpenClawConfig'];
+  task: ScheduledTask;
+  pendingSkillAgent?: { agentId: string; skillIds: string[] } | null;
+  configChanged: boolean;
+}): ScheduledTask {
+  const { metaStore, syncOpenClawConfig, task, pendingSkillAgent, configChanged } = options;
+  if (pendingSkillAgent && task?.id) {
+    metaStore.setAgent(task.id, {
+      agentId: pendingSkillAgent.agentId,
+      taskName: task.name ?? pendingSkillAgent.agentId,
+      skillIds: pendingSkillAgent.skillIds,
+    });
+    triggerAgentsConfigSync(syncOpenClawConfig);
+    return { ...task, agentSkillIds: pendingSkillAgent.skillIds };
+  }
+  if (configChanged) {
+    triggerAgentsConfigSync(syncOpenClawConfig);
+  }
+  const meta = task?.id ? metaStore.getAgent(task.id) : null;
+  return meta ? { ...task, agentSkillIds: meta.skillIds } : task;
+}
+
+function triggerAgentsConfigSync(
+  syncOpenClawConfig: ScheduledTaskHandlerDeps['syncOpenClawConfig'],
+): void {
+  syncOpenClawConfig({ reason: 'scheduled-task-agent-updated' }).catch((err: unknown) => {
+    console.error('[ScheduledTask] config sync after task agent update failed:', err);
+  });
+}
+
 export function registerScheduledTaskHandlers(deps: ScheduledTaskHandlerDeps): void {
   const { getCronJobService, getIMGatewayManager, getOpenClawRuntimeAdapter, getCoworkSessionTitle } = deps;
 
@@ -549,8 +668,16 @@ export function registerScheduledTaskHandlers(deps: ScheduledTaskHandlerDeps): v
       if (!(await ensureScheduledTaskGatewayClient(getOpenClawRuntimeAdapter))) {
         return { success: true, ready: false, tasks: [] };
       }
+      const metaStore = deps.getMetaStore();
       const tasks = await getCronJobService().listJobs();
-      return { success: true, ready: true, tasks };
+      return {
+        success: true,
+        ready: true,
+        tasks: tasks.map((task) => {
+          const meta = metaStore.getAgent(task.id);
+          return meta ? { ...task, agentSkillIds: meta.skillIds } : task;
+        }),
+      };
     } catch (error) {
       return {
         success: false,
@@ -562,7 +689,8 @@ export function registerScheduledTaskHandlers(deps: ScheduledTaskHandlerDeps): v
   ipcMain.handle(ScheduledTaskIpc.Get, async (_event, id: string) => {
     try {
       const task = await getCronJobService().getJob(id);
-      return { success: true, task };
+      const meta = task ? deps.getMetaStore().getAgent(task.id) : null;
+      return { success: true, task: meta && task ? { ...task, agentSkillIds: meta.skillIds } : task };
     } catch (error) {
       return {
         success: false,
@@ -575,6 +703,13 @@ export function registerScheduledTaskHandlers(deps: ScheduledTaskHandlerDeps): v
     try {
       const normalizedInput = input && typeof input === 'object' ? { ...input } : {};
       console.debug('[ScheduledTask] create input:', JSON.stringify(normalizedInput, null, 2));
+      // Skills selection first: it sets the synthetic agentId explicitly, so
+      // the announce auto-binding below correctly skips (explicit wins).
+      const skills = applyTaskSkillsSelection({
+        metaStore: deps.getMetaStore(),
+        input: normalizedInput,
+        taskId: null,
+      });
       await applyAnnounceDeliveryNormalization(normalizedInput, {
         getIMGatewayManager,
         getOpenClawRuntimeAdapter,
@@ -582,7 +717,14 @@ export function registerScheduledTaskHandlers(deps: ScheduledTaskHandlerDeps): v
 
       const task = await getCronJobService().addJob(normalizedInput);
       console.log('[IPC][scheduledTask:create] result task id:', task?.id, 'name:', task?.name);
-      return { success: true, task };
+      const enrichedTask = finalizeTaskSkills({
+        metaStore: deps.getMetaStore(),
+        syncOpenClawConfig: deps.syncOpenClawConfig,
+        task,
+        pendingSkillAgent: skills.pendingSkillAgent,
+        configChanged: skills.configChanged,
+      });
+      return { success: true, task: enrichedTask };
     } catch (error) {
       return {
         success: false,
@@ -599,6 +741,11 @@ export function registerScheduledTaskHandlers(deps: ScheduledTaskHandlerDeps): v
         id,
         JSON.stringify(normalizedInput, null, 2),
       );
+      const skills = applyTaskSkillsSelection({
+        metaStore: deps.getMetaStore(),
+        input: normalizedInput,
+        taskId: id,
+      });
       await applyAnnounceDeliveryNormalization(normalizedInput, {
         getIMGatewayManager,
         getOpenClawRuntimeAdapter,
@@ -606,7 +753,14 @@ export function registerScheduledTaskHandlers(deps: ScheduledTaskHandlerDeps): v
 
       const task = await getCronJobService().updateJob(id, normalizedInput);
       console.log('[IPC][scheduledTask:update] result task id:', task?.id, 'name:', task?.name);
-      return { success: true, task };
+      const enrichedTask = finalizeTaskSkills({
+        metaStore: deps.getMetaStore(),
+        syncOpenClawConfig: deps.syncOpenClawConfig,
+        task,
+        pendingSkillAgent: null,
+        configChanged: skills.configChanged,
+      });
+      return { success: true, task: enrichedTask };
     } catch (error) {
       return {
         success: false,
@@ -618,6 +772,13 @@ export function registerScheduledTaskHandlers(deps: ScheduledTaskHandlerDeps): v
   ipcMain.handle(ScheduledTaskIpc.Delete, async (_event, id: string) => {
     try {
       await getCronJobService().removeJob(id);
+      // Drop the local meta (incl. the synthetic agent) with the task.
+      const metaStore = deps.getMetaStore();
+      const hadAgent = metaStore.getAgent(id) !== null;
+      metaStore.delete(id);
+      if (hadAgent) {
+        triggerAgentsConfigSync(deps.syncOpenClawConfig);
+      }
       return { success: true, result: true };
     } catch (error) {
       return {

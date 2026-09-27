@@ -17,6 +17,7 @@ export const ScheduledTaskTemplateId = {
   WeeklyReport: 'weekly_report',
   ProjectHealth: 'project_health',
   MonthlyAdmin: 'monthly_admin',
+  PaperPipelineAutopilot: 'paper_pipeline_autopilot',
 } as const;
 export type ScheduledTaskTemplateId =
   typeof ScheduledTaskTemplateId[keyof typeof ScheduledTaskTemplateId];
@@ -150,6 +151,20 @@ export const SCHEDULED_TASK_TEMPLATES: readonly ScheduledTaskTemplate[] = [
       hour: 10,
       minute: 0,
       monthDay: 25,
+    },
+  },
+  {
+    id: ScheduledTaskTemplateId.PaperPipelineAutopilot,
+    icon: ScheduledTaskTemplateIcon.Newspaper,
+    titleKey: 'scheduledTasksTemplatePaperPipelineTitle',
+    descriptionKey: 'scheduledTasksTemplatePaperPipelineDesc',
+    scheduleLabelKey: 'scheduledTasksTemplatePaperPipelineSchedule',
+    promptKey: 'scheduledTasksTemplatePaperPipelinePrompt',
+    schedule: {
+      planType: ScheduledTaskTemplatePlanType.Weekly,
+      hour: 9,
+      minute: 0,
+      weekdays: [1, 2, 3, 4, 5],
     },
   },
 ];

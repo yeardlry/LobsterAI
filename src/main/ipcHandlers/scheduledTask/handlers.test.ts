@@ -20,8 +20,10 @@ import {
   WakeMode,
 } from '../../../scheduledTask/constants';
 import type { CronJobService } from '../../../scheduledTask/cronJobService';
+import type { ScheduledTaskMetaStore } from '../../../scheduledTask/metaStore';
 import { OpenClawEnginePhase } from '../../../shared/openclawEngine/constants';
 import {
+  extractSkillIds,
   migrateScheduledTaskAnnounceJobs,
   registerScheduledTaskHandlers,
   type ScheduledTaskHandlerDeps,
@@ -43,6 +45,16 @@ function makeDeps(
     })),
     runJob: vi.fn(async () => {}),
   };
+  const metaStore = {
+    get: vi.fn(() => null),
+    set: vi.fn(),
+    setAgent: vi.fn(),
+    getAgent: vi.fn((): null => null),
+    delete: vi.fn(),
+    list: vi.fn(() => []),
+    listAgents: vi.fn(() => []),
+  };
+  const syncOpenClawConfig = vi.fn(async () => ({ success: true, changed: false }));
   const adapter = {
     getGatewayClient: vi.fn(() => gatewayClient),
     getEngineStatusSnapshot: vi.fn(() => ({ phase: enginePhase })),
@@ -56,9 +68,11 @@ function makeDeps(
     getIMGatewayManager: () => null,
     getCoworkSessionTitle: () => null,
     getOpenClawRuntimeAdapter: () => adapter,
+    getMetaStore: () => metaStore as unknown as ScheduledTaskMetaStore,
+    syncOpenClawConfig,
   };
 
-  return { adapter, cronJobService, deps };
+  return { adapter, cronJobService, deps, metaStore, syncOpenClawConfig };
 }
 
 beforeEach(() => {
@@ -714,5 +728,141 @@ describe('registerScheduledTaskHandlers', () => {
       channel: 'openclaw-weixin',
       to: 'wxid_zhangsan@im.wechat',
     });
+  });
+
+  describe('per-task skills selection (synthetic agent)', () => {
+    test('create with skillIds binds a synthetic agent and persists meta after addJob', async () => {
+      const { cronJobService, deps, metaStore, syncOpenClawConfig } = makeDeps();
+      registerScheduledTaskHandlers(deps);
+
+      const handler = registeredHandlers.get(ScheduledTaskIpc.Create);
+      const result = await handler?.(undefined, {
+        name: '文献推进',
+        enabled: true,
+        schedule: { kind: 'cron', expr: '0 9 * * *' },
+        sessionTarget: SessionTarget.Isolated,
+        wakeMode: WakeMode.Now,
+        payload: { kind: PayloadKind.AgentTurn, message: 'go' },
+        delivery: { mode: DeliveryMode.None },
+        skillIds: ['skill-a', 'skill-b'],
+      });
+
+      // The minted synthetic agentId lands in the SAME gateway call.
+      const input = cronJobService.addJob.mock.calls[0][0] as { agentId?: string };
+      expect(input.agentId).toMatch(/^task-agent-/);
+      // Meta is persisted once the gateway assigns the job id.
+      expect(metaStore.setAgent).toHaveBeenCalledWith('job-1', {
+        agentId: input.agentId,
+        taskName: '文献推进',
+        skillIds: ['skill-a', 'skill-b'],
+      });
+      expect(syncOpenClawConfig).toHaveBeenCalledWith({ reason: 'scheduled-task-agent-updated' });
+      // The returned task is enriched so the form round-trips the selection.
+      expect(result).toEqual({
+        success: true,
+        task: { id: 'job-1', name: '文献推进', agentSkillIds: ['skill-a', 'skill-b'] },
+      });
+    });
+
+    test('create without skillIds does not manage the agent at all', async () => {
+      const { cronJobService, deps, metaStore, syncOpenClawConfig } = makeDeps();
+      registerScheduledTaskHandlers(deps);
+
+      const handler = registeredHandlers.get(ScheduledTaskIpc.Create);
+      await handler?.(undefined, {
+        name: 'plain',
+        enabled: true,
+        schedule: { kind: 'cron', expr: '0 9 * * *' },
+        payload: { kind: PayloadKind.AgentTurn, message: 'go' },
+      });
+
+      const input = cronJobService.addJob.mock.calls[0][0] as { agentId?: string };
+      expect(input.agentId).toBeUndefined();
+      expect(metaStore.setAgent).not.toHaveBeenCalled();
+      expect(syncOpenClawConfig).not.toHaveBeenCalled();
+    });
+
+    test('update with an empty skillIds array clears an existing synthetic agent', async () => {
+      const existing = { agentId: 'task-agent-abcd1234', taskName: '旧名', skillIds: ['s1'] };
+      const { cronJobService, deps, metaStore, syncOpenClawConfig } = makeDeps();
+      metaStore.getAgent.mockImplementation((taskId: string) =>
+        taskId === 'job-1' ? existing : null,
+      );
+      registerScheduledTaskHandlers(deps);
+
+      const handler = registeredHandlers.get(ScheduledTaskIpc.Update);
+      await handler?.(undefined, 'job-1', {
+        name: 'renamed',
+        enabled: true,
+        schedule: { kind: 'cron', expr: '0 9 * * *' },
+        payload: { kind: PayloadKind.AgentTurn, message: 'go' },
+        skillIds: [],
+      });
+
+      expect(metaStore.setAgent).toHaveBeenCalledWith('job-1', null);
+      // The job falls back to the default agent.
+      const input = cronJobService.updateJob.mock.calls[0][1] as { agentId?: string | null };
+      expect(input.agentId).toBeNull();
+      expect(syncOpenClawConfig).toHaveBeenCalledWith({ reason: 'scheduled-task-agent-updated' });
+    });
+
+    test('update keeps the synthetic agentId when skills are re-selected', async () => {
+      const existing = { agentId: 'task-agent-abcd1234', taskName: '旧名', skillIds: ['s1'] };
+      const { cronJobService, deps, metaStore } = makeDeps();
+      metaStore.getAgent.mockImplementation((taskId: string) =>
+        taskId === 'job-1' ? existing : null,
+      );
+      registerScheduledTaskHandlers(deps);
+
+      const handler = registeredHandlers.get(ScheduledTaskIpc.Update);
+      await handler?.(undefined, 'job-1', {
+        name: 'renamed',
+        enabled: true,
+        schedule: { kind: 'cron', expr: '0 9 * * *' },
+        payload: { kind: PayloadKind.AgentTurn, message: 'go' },
+        skillIds: ['s1', 's2'],
+      });
+
+      const input = cronJobService.updateJob.mock.calls[0][1] as { agentId?: string };
+      expect(input.agentId).toBe('task-agent-abcd1234');
+      expect(metaStore.setAgent).toHaveBeenCalledWith('job-1', {
+        agentId: 'task-agent-abcd1234',
+        taskName: 'renamed',
+        skillIds: ['s1', 's2'],
+      });
+    });
+  });
+});
+
+describe('extractSkillIds', () => {
+  // extractSkillIds is the first step of every create/update, so a throw
+  // here fails the whole save. Regression: it used to `delete` the input
+  // field before reading it, crashing with "Cannot read properties of
+  // undefined (reading 'filter')" whenever the form sent skillIds.
+  test('returns valid skill ids and strips the field from the input', () => {
+    const input: Record<string, any> = { name: 'T', skillIds: ['s1', '  ', 's2', 42, null] };
+
+    expect(extractSkillIds(input)).toEqual(['s1', 's2']);
+    expect('skillIds' in input).toBe(false);
+    expect(input.name).toBe('T');
+  });
+
+  test('returns an empty array for an explicitly empty selection (means "clear")', () => {
+    const input: Record<string, any> = { skillIds: [] };
+
+    expect(extractSkillIds(input)).toEqual([]);
+    expect('skillIds' in input).toBe(false);
+  });
+
+  test('returns undefined when the request does not manage skills', () => {
+    const input: Record<string, any> = { name: 'T' };
+
+    expect(extractSkillIds(input)).toBeUndefined();
+    expect('skillIds' in input).toBe(false);
+  });
+
+  test('ignores non-array values', () => {
+    expect(extractSkillIds({ skillIds: 's1' })).toBeUndefined();
+    expect(extractSkillIds({ skillIds: null })).toBeUndefined();
   });
 });

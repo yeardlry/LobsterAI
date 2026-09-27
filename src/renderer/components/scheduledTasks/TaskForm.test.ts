@@ -103,6 +103,35 @@ describe('createScheduledTaskFormState', () => {
     expect(form.weekdays).toEqual([1, 2, 3, 4, 5]);
     expect(form.modelId).toBe(fallbackModelRef);
   });
+
+  test('new tasks default to the default agent with no skills', () => {
+    const form = createScheduledTaskFormState(undefined, fallbackModelRef);
+
+    expect(form.agentId).toBe('');
+    expect(form.skillIds).toEqual([]);
+  });
+
+  test('keeps an explicit task agent binding', () => {
+    const form = createScheduledTaskFormState(makeTask({ agentId: 'agent-42' }), fallbackModelRef);
+
+    expect(form.agentId).toBe('agent-42');
+    expect(form.skillIds).toEqual([]);
+  });
+
+  test('presents a synthetic skills agent as default agent + selected skills', () => {
+    const form = createScheduledTaskFormState(
+      makeTask({
+        agentId: 'task-agent-abcd1234',
+        agentSkillIds: ['skill-a', 'skill-b'],
+      }),
+      fallbackModelRef,
+    );
+
+    // The synthetic agent id is an implementation detail; the form shows the
+    // default-agent option with the skills pre-selected.
+    expect(form.agentId).toBe('');
+    expect(form.skillIds).toEqual(['skill-a', 'skill-b']);
+  });
 });
 
 describe('scheduleToPlanInfo', () => {

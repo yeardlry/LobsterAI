@@ -16,8 +16,11 @@ import type {
   ScheduledTaskDelivery,
   ScheduledTaskInput,
 } from '../../../scheduledTask/types';
+import { agentService } from '../../services/agent';
 import { i18nService } from '../../services/i18n';
+import { mcpService } from '../../services/mcp';
 import { scheduledTaskService } from '../../services/scheduledTask';
+import { skillService } from '../../services/skill';
 import { RootState } from '../../store';
 import type { Model } from '../../store/slices/modelSlice';
 import { resolveOpenClawModelRef, toOpenClawModelRef } from '../../utils/openclawModelRef';
@@ -103,6 +106,10 @@ interface FormState {
   cronBuilder: CronBuilder;
   notifyAccountId: string | undefined;
   modelId: string;
+  /** '' = default agent (main); otherwise an enabled agent id. */
+  agentId: string;
+  /** Skills selected for the default agent; only submitted when agentId === ''. */
+  skillIds: string[];
 }
 
 function nowDefaults() {
@@ -133,6 +140,8 @@ const DEFAULT_FORM_STATE: FormState = {
   cronBuilder: { ...DEFAULT_CRON_BUILDER },
   notifyAccountId: undefined,
   modelId: '',
+  agentId: '',
+  skillIds: [],
 };
 
 // Cron quick-pick examples: [label key, expr]
@@ -187,6 +196,11 @@ export function createScheduledTaskFormState(
     ? (task.payload.model?.trim() || fallbackModelRef)
     : '';
 
+  // A task bound to a synthetic task-agent (skills selected in the form) is
+  // presented as "default agent + skill selection": the synthetic agent id is
+  // an implementation detail the user never sees.
+  const taskSkillIds = task.agentSkillIds ?? null;
+
   return {
     name: task.name,
     description: task.description,
@@ -208,6 +222,8 @@ export function createScheduledTaskFormState(
     cronBuilder: parsedBuilder,
     notifyAccountId: task.delivery.accountId,
     modelId: taskModelRef,
+    agentId: taskSkillIds ? '' : (task.agentId ?? ''),
+    skillIds: taskSkillIds ? [...taskSkillIds] : [],
   };
 }
 
@@ -292,6 +308,9 @@ const TaskForm: React.FC<TaskFormProps> = ({
   onDirtyChange,
 }) => {
   const availableModels = useSelector((state: RootState) => state.model.availableModels);
+  const agents = useSelector((state: RootState) => state.agent.agents);
+  const mcpServers = useSelector((state: RootState) => state.mcp.servers);
+  const skills = useSelector((state: RootState) => state.skill.skills);
   const defaultSelectedModel = useSelector((state: RootState) => state.model.defaultSelectedModel);
   const fallbackModelRef = defaultSelectedModel ? toOpenClawModelRef(defaultSelectedModel) : '';
   const [form, setForm] = useState<FormState>(() =>
@@ -376,6 +395,14 @@ const TaskForm: React.FC<TaskFormProps> = ({
       templateName: mode === 'create' && initialTemplate ? i18nService.t(initialTemplate.titleKey) : undefined,
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    // Agent dropdown + skills selector + MCP info line data. All three are
+    // fire-and-forget; the sections render progressively as they arrive.
+    void agentService.loadAgents().catch(() => {});
+    void skillService.loadSkills().catch(() => {});
+    void mcpService.loadServers().catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -640,6 +667,14 @@ const TaskForm: React.FC<TaskFormProps> = ({
         sessionTarget: SessionTarget.Isolated,
         wakeMode: WakeMode.Now,
         payload,
+        // Skills only apply to the default agent; picking an explicit agent
+        // clears any previous skills selection (the handler treats [] as clear).
+        ...(isSystemEventTask
+          ? {}
+          : {
+              agentId: form.agentId || null,
+              skillIds: form.agentId ? [] : [...form.skillIds],
+            }),
         delivery:
           form.notifyChannel === 'none'
             ? { mode: DeliveryMode.None }
@@ -1211,6 +1246,9 @@ const TaskForm: React.FC<TaskFormProps> = ({
   const channelDropdownRef = React.useRef<HTMLDivElement>(null);
   const [convDropdownOpen, setConvDropdownOpen] = useState(false);
   const convDropdownRef = React.useRef<HTMLDivElement>(null);
+  const [skillsDropdownOpen, setSkillsDropdownOpen] = useState(false);
+  const skillsDropdownRef = React.useRef<HTMLDivElement>(null);
+  const [skillSearch, setSkillSearch] = useState('');
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -1225,6 +1263,12 @@ const TaskForm: React.FC<TaskFormProps> = ({
         !convDropdownRef.current.contains(event.target as Node)
       ) {
         setConvDropdownOpen(false);
+      }
+      if (
+        skillsDropdownRef.current &&
+        !skillsDropdownRef.current.contains(event.target as Node)
+      ) {
+        setSkillsDropdownOpen(false);
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
@@ -1482,6 +1526,141 @@ const TaskForm: React.FC<TaskFormProps> = ({
     );
   };
 
+  /** Skills multi-select popover — same interaction pattern as the notify
+   *  channel dropdown (button + upward popover + checkmarks). */
+  const renderSkillsSelector = () => {
+    const enabledSkills = skills.filter(skill => skill.enabled);
+    const query = skillSearch.trim().toLowerCase();
+    const filteredSkills = query
+      ? enabledSkills.filter(skill => {
+          const description = skillService.getLocalizedSkillDescription(
+            skill.id,
+            skill.name,
+            skill.description,
+          );
+          return (
+            skill.name.toLowerCase().includes(query) ||
+            skill.id.toLowerCase().includes(query) ||
+            description.toLowerCase().includes(query)
+          );
+        })
+      : enabledSkills;
+    const skillNameSeparator = i18nService.getLanguage() === 'zh' ? '、' : ', ';
+    const selectedSkillNames = form.skillIds
+      .map(id => enabledSkills.find(skill => skill.id === id)?.name ?? id)
+      .join(skillNameSeparator);
+    const unrestrictedLabel = i18nService.t('scheduledTasksFormSkillsUnrestricted');
+    const rowClass =
+      'w-full flex items-center gap-2 px-3 py-2 text-left text-foreground hover:bg-claude-surfaceHover dark:hover:bg-claude-darkSurfaceHover transition-colors';
+
+    return (
+      <div className="mt-3">
+        <label className={labelClass}>{i18nService.t('scheduledTasksFormSkills')}</label>
+        <div className="relative w-full" ref={skillsDropdownRef}>
+          <button
+            type="button"
+            onClick={() => setSkillsDropdownOpen(open => !open)}
+            title={form.skillIds.length > 0 ? selectedSkillNames : unrestrictedLabel}
+            className={`${inputClass} w-full flex items-center justify-between cursor-pointer`}
+          >
+            <span className="truncate">
+              {form.skillIds.length > 0 ? selectedSkillNames : unrestrictedLabel}
+            </span>
+            <svg
+              className={`w-4 h-4 ml-2 flex-shrink-0 transition-transform ${
+                skillsDropdownOpen ? 'rotate-180' : ''
+              }`}
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M19 9l-7 7-7-7"
+              />
+            </svg>
+          </button>
+
+          {skillsDropdownOpen && (
+            <div className="absolute bottom-full z-50 mb-1 w-full rounded-xl border border-border bg-surface shadow-popover popover-enter overflow-hidden">
+              <div className="border-b border-border/60 px-2.5 py-2">
+                <input
+                  type="text"
+                  value={skillSearch}
+                  onChange={event => setSkillSearch(event.target.value)}
+                  placeholder={i18nService.t('scheduledTasksFormSkillsSearchPlaceholder')}
+                  className="w-full rounded-md border border-border bg-surface px-2 py-1 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary/50"
+                  spellCheck={false}
+                />
+              </div>
+              <div className="max-h-72 overflow-y-auto py-1">
+                <button
+                  type="button"
+                  className={rowClass}
+                  onClick={() => updateForm({ skillIds: [] })}
+                >
+                  <span className="min-w-0 flex-1 truncate text-[13px] font-normal leading-5">
+                    {unrestrictedLabel}
+                  </span>
+                  {form.skillIds.length === 0 && (
+                    <CheckIcon className="h-4 w-4 shrink-0 text-emerald-500" />
+                  )}
+                </button>
+                {filteredSkills.map(skill => {
+                  const active = form.skillIds.includes(skill.id);
+                  const description = skillService.getLocalizedSkillDescription(
+                    skill.id,
+                    skill.name,
+                    skill.description,
+                  );
+                  return (
+                    <button
+                      type="button"
+                      key={skill.id}
+                      title={description || skill.name}
+                      className={`${rowClass} ${
+                        active ? 'bg-claude-surfaceHover/50 dark:bg-claude-darkSurfaceHover/50' : ''
+                      }`}
+                      onClick={() =>
+                        updateForm({
+                          skillIds: active
+                            ? form.skillIds.filter(id => id !== skill.id)
+                            : [...form.skillIds, skill.id],
+                        })
+                      }
+                    >
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[13px] font-medium leading-5 text-foreground">
+                          {skill.name}
+                        </span>
+                        {description && (
+                          <span className="block truncate text-xs leading-4 text-secondary/80">
+                            {description}
+                          </span>
+                        )}
+                      </span>
+                      {active && (
+                        <CheckIcon className="h-4 w-4 shrink-0 text-emerald-500" />
+                      )}
+                    </button>
+                  );
+                })}
+                {filteredSkills.length === 0 && (
+                  <div className="px-3 py-2 text-[13px] text-secondary">
+                    {i18nService.t('scheduledTasksFormSkillsEmpty')}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+        <p className={hintClass}>{i18nService.t('scheduledTasksFormSkillsHint')}</p>
+      </div>
+    );
+  };
+
   const payloadCharCount = form.payloadText.length;
 
   return (
@@ -1597,6 +1776,39 @@ const TaskForm: React.FC<TaskFormProps> = ({
             )}
             {errors.payloadText && <p className={errorClass}>{errors.payloadText}</p>}
           </div>
+
+          {/* Agent, skills & MCP */}
+          {!isSystemEventTask && (
+            <div>
+              <label className={labelClass}>{i18nService.t('scheduledTasksFormAgent')}</label>
+              <select
+                value={form.agentId}
+                onChange={event => updateForm({ agentId: event.target.value })}
+                className={inputClass}
+              >
+                <option value="">{i18nService.t('scheduledTasksFormAgentDefault')}</option>
+                {agents
+                  .filter(agent => agent.enabled && agent.id !== 'main')
+                  .map(agent => (
+                    <option key={agent.id} value={agent.id}>{agent.name}</option>
+                  ))}
+                {/* Keep the raw id visible when the bound agent was deleted. */}
+                {form.agentId && !agents.some(agent => agent.id === form.agentId) && (
+                  <option value={form.agentId}>{form.agentId}</option>
+                )}
+              </select>
+              <p className={hintClass}>{i18nService.t('scheduledTasksFormAgentHint')}</p>
+              {form.agentId === '' && renderSkillsSelector()}
+              <p className={hintClass}>
+                {i18nService
+                  .t('scheduledTasksFormMcpInfo')
+                  .replace(
+                    '{count}',
+                    String(mcpServers.filter(server => server.enabled).length),
+                  )}
+              </p>
+            </div>
+          )}
 
           {/* Notification */}
           {renderNotifyRow()}

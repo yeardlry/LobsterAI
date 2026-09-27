@@ -69,6 +69,13 @@ export interface ScheduledTask {
   state: TaskState;
   createdAt: string;
   updatedAt: string;
+  /**
+   * Skills selected in the task form (local-only; the gateway has no
+   * per-job skills field). Present iff this task runs as a derived
+   * synthetic agent. Enriched onto the wire task by the IPC handlers
+   * from `scheduled_task_meta`.
+   */
+  agentSkillIds?: string[] | null;
 }
 
 export interface ScheduledTaskRun {
@@ -100,6 +107,15 @@ export interface ScheduledTaskInput {
   delivery?: ScheduledTaskDelivery;
   agentId?: string | null;
   sessionKey?: string | null;
+  /**
+   * Skills multi-selected in the task form. When non-empty (and no
+   * explicit agentId was picked), the IPC handler binds the job to a
+   * derived synthetic agent carrying this skill allowlist — OpenClaw's
+   * cron schema has no per-job skills field. `undefined` means "this
+   * request does not manage skills" (keeps existing meta untouched);
+   * `[]` clears a previously selected set.
+   */
+  skillIds?: string[];
 }
 
 export interface ScheduledTaskStatusEvent {
