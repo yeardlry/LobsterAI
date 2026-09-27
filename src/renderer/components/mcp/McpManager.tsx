@@ -581,13 +581,16 @@ const McpManager: React.FC = () => {
       icon: <EditIcon className="h-3.5 w-3.5" />,
       onSelect: () => handleOpenEditForm(server),
     },
-    {
-      key: 'delete',
-      label: i18nService.t('delete'),
-      icon: <TrashIcon className="h-3.5 w-3.5" />,
-      destructive: true,
-      onSelect: () => handleRequestDelete(server),
-    },
+    // App-managed (auto-seeded) servers cannot be deleted.
+    ...(!server.locked
+      ? [{
+        key: 'delete',
+        label: i18nService.t('delete'),
+        icon: <TrashIcon className="h-3.5 w-3.5" />,
+        destructive: true,
+        onSelect: () => handleRequestDelete(server),
+      }]
+      : []),
   ];
 
   const handleInstallFromRegistry = (entry: McpRegistryEntry) => {
@@ -1004,14 +1007,16 @@ const McpManager: React.FC = () => {
                 <EditIcon className="h-4 w-4" />
                 {i18nService.t('edit')}
               </button>
-              <button
-                type="button"
-                onClick={() => { closeDetail(); handleRequestDelete(server); }}
-                className={DETAIL_FOOTER_DESTRUCTIVE_CLASS}
-              >
-                <TrashIcon className="h-4 w-4" />
-                {i18nService.t('delete')}
-              </button>
+              {!server.locked && (
+                <button
+                  type="button"
+                  onClick={() => { closeDetail(); handleRequestDelete(server); }}
+                  className={DETAIL_FOOTER_DESTRUCTIVE_CLASS}
+                >
+                  <TrashIcon className="h-4 w-4" />
+                  {i18nService.t('delete')}
+                </button>
+              )}
             </div>
           </>
         )}

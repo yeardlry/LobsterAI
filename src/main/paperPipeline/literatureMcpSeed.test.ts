@@ -20,6 +20,7 @@ function serverView(overrides: Partial<LiteratureMcpSeedServerView>): Literature
     name: 'literature-manager',
     transportType: 'streamable-http',
     useAuthToken: true,
+    locked: true,
     ...overrides,
   };
 }
@@ -109,6 +110,15 @@ describe('planLiteratureMcpSeed', () => {
     const servers = [
       serverView({ id: 'a', url: PROD_URL, transportType: 'http', useAuthToken: undefined }),
     ];
+    expect(planLiteratureMcpSeed(servers, PROD_URL)).toEqual({
+      action: 'update',
+      serverId: 'a',
+      url: PROD_URL,
+    });
+  });
+
+  test('locks an unlocked URL-matched record (delete protection)', () => {
+    const servers = [serverView({ id: 'a', url: PROD_URL, locked: undefined })];
     expect(planLiteratureMcpSeed(servers, PROD_URL)).toEqual({
       action: 'update',
       serverId: 'a',

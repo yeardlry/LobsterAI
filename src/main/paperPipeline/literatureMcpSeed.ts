@@ -38,6 +38,7 @@ export interface LiteratureMcpSeedServerView {
   url?: string;
   transportType: string;
   useAuthToken?: boolean;
+  locked?: boolean;
 }
 
 export type LiteratureMcpSeedPlan =
@@ -80,7 +81,8 @@ export function planLiteratureMcpSeed(
   }
   const needsUpdate = matched.url !== targetUrl
     || matched.transportType !== LiteratureMcpSeedConstants.Transport
-    || matched.useAuthToken !== true;
+    || matched.useAuthToken !== true
+    || matched.locked !== true;
   if (!needsUpdate) {
     return { action: 'none' };
   }
@@ -113,6 +115,7 @@ export function seedLiteratureMcpServer(store: McpStore): void {
       transportType: LiteratureMcpSeedConstants.Transport,
       url,
       useAuthToken: true,
+      locked: true,
     });
     console.log(`[LiteratureMCP] created server "${LiteratureMcpSeedConstants.ServerName}" -> ${url} (${source})`);
     return;
@@ -122,6 +125,7 @@ export function seedLiteratureMcpServer(store: McpStore): void {
     url,
     transportType: LiteratureMcpSeedConstants.Transport,
     useAuthToken: true,
+    locked: true,
   });
   console.log(`[LiteratureMCP] updated existing server ${plan.serverId} -> ${url} (${source})`);
 }

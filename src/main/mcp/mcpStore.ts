@@ -21,6 +21,12 @@ export interface McpServerRecord {
    * honored when the active auth session is a lit login.
    */
   useAuthToken?: boolean;
+  /**
+   * When true, the server is app-managed (auto-seeded at startup, e.g. the
+   * literature-manager server) and cannot be deleted from the UI or by
+   * migration overwrite; `deleteServer` refuses.
+   */
+  locked?: boolean;
   isBuiltIn: boolean;
   githubUrl?: string;
   registryId?: string;
@@ -40,6 +46,8 @@ export interface McpServerFormData {
   headers?: Record<string, string>;
   /** Mirror of McpServerRecord.useAuthToken; see that field for semantics. */
   useAuthToken?: boolean;
+  /** Mirror of McpServerRecord.locked; see that field for semantics. */
+  locked?: boolean;
   isBuiltIn?: boolean;
   githubUrl?: string;
   registryId?: string;
@@ -63,6 +71,7 @@ interface McpConfigJson {
   url?: string;
   headers?: Record<string, string>;
   useAuthToken?: boolean;
+  locked?: boolean;
   isBuiltIn?: boolean;
   githubUrl?: string;
   registryId?: string;
@@ -208,6 +217,7 @@ export class McpStore {
       url: config.url,
       headers: config.headers,
       useAuthToken: config.useAuthToken === true ? true : undefined,
+      locked: config.locked === true ? true : undefined,
       isBuiltIn: config.isBuiltIn === true,
       githubUrl: config.githubUrl,
       registryId: config.registryId,
@@ -225,6 +235,7 @@ export class McpStore {
     if (data.url !== undefined) config.url = data.url;
     if (data.headers !== undefined && Object.keys(data.headers).length > 0) config.headers = data.headers;
     if (data.useAuthToken === true) config.useAuthToken = true;
+    if (data.locked === true) config.locked = true;
     if (data.isBuiltIn) config.isBuiltIn = true;
     if (data.githubUrl) config.githubUrl = data.githubUrl;
     if (data.registryId) config.registryId = data.registryId;
@@ -298,6 +309,7 @@ export class McpStore {
       url: data.url !== undefined ? data.url : existing.url,
       headers: data.headers !== undefined ? data.headers : existing.headers,
       useAuthToken: data.useAuthToken !== undefined ? data.useAuthToken : existing.useAuthToken,
+      locked: data.locked !== undefined ? data.locked : existing.locked,
       isBuiltIn: data.isBuiltIn !== undefined ? data.isBuiltIn : existing.isBuiltIn,
       githubUrl: data.githubUrl !== undefined ? data.githubUrl : existing.githubUrl,
       registryId: data.registryId !== undefined ? data.registryId : existing.registryId,
@@ -317,6 +329,9 @@ export class McpStore {
   deleteServer(id: string): boolean {
     const existing = this.getServer(id);
     if (!existing) return false;
+    if (existing.locked) {
+      throw new Error(`MCP server "${existing.name}" is managed by LobsterAI and cannot be deleted`);
+    }
 
     this.db.prepare('DELETE FROM mcp_servers WHERE id = ?').run(id);
     this.deleteLaunchResolution(id);

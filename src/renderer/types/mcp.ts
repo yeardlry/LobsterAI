@@ -25,6 +25,12 @@ export interface McpServerConfig {
    */
   useAuthToken?: boolean;
   isBuiltIn: boolean;            // installed from built-in registry
+  /**
+   * When true, the server is app-managed (auto-seeded at startup) and cannot
+   * be deleted — the delete action is hidden in the UI and refused by the
+   * main process.
+   */
+  locked?: boolean;
   githubUrl?: string;            // GitHub repository URL
   registryId?: string;           // matching registry entry ID
   launchResolution?: McpLaunchResolution;

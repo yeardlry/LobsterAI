@@ -13775,8 +13775,10 @@ if (!gotTheLock) {
             }
           },
           () => {
-            // Clear all MCP servers (for overwrite mode)
+            // Clear all MCP servers (for overwrite mode). Locked servers are
+            // app-managed (auto-seeded) and survive the overwrite.
             for (const s of mcpStoreInstance.listServers()) {
+              if (s.locked) continue;
               mcpStoreInstance.deleteServer(s.id);
             }
           },
