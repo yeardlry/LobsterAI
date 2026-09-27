@@ -544,6 +544,12 @@ const gwDiagTs = (): string => {
 // the English APP_NAME via configureUserDataPath below.
 app.name = APP_DISPLAY_NAME;
 app.setName(APP_DISPLAY_NAME);
+// Chromium bakes the app name into the default User-Agent. The localized
+// name is non-ASCII, which Spring Security's StrictHttpFirewall (RuoYi
+// backends among others) rejects outright — swap it for the English name
+// in the fallback UA used by net.fetch and any session that does not set
+// its own UA.
+app.userAgentFallback = app.userAgentFallback.split(APP_DISPLAY_NAME).join(APP_NAME);
 if (process.platform === 'win32') {
   app.setAppUserModelId(APP_USER_MODEL_ID);
 }
