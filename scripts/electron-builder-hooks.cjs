@@ -1,7 +1,7 @@
 'use strict';
 
 const path = require('path');
-const { existsSync, readdirSync, statSync, mkdirSync, readFileSync, rmSync, cpSync, lstatSync } = require('fs');
+const { existsSync, readdirSync, statSync, mkdirSync, readFileSync, writeFileSync, rmSync, cpSync, lstatSync } = require('fs');
 const { spawnSync } = require('child_process');
 const asar = require('@electron/asar');
 const { ensurePortablePythonRuntime, checkRuntimeHealth } = require('./setup-python-runtime.js');
@@ -522,7 +522,22 @@ function installSkillDependencies() {
   console.log(`[electron-builder-hooks] Skill dependencies: ${installedCount} installed, ${skippedCount} skipped, ${failedCount} failed`);
 }
 
+/**
+ * electron-builder errors out when an extraResources `from` path is missing.
+ * `.env.production` is gitignored and only exists on machines that customize
+ * the packaged literature MCP URL, so create an empty placeholder when absent
+ * (the app falls back to the dev URL when the file lacks the variable).
+ */
+function ensureEnvProductionFile() {
+  const envPath = path.join(__dirname, '..', '.env.production');
+  if (existsSync(envPath)) return;
+
+  writeFileSync(envPath, '');
+  console.log('[electron-builder-hooks] Created empty .env.production placeholder for packaging');
+}
+
 async function beforePack(context) {
+  ensureEnvProductionFile();
   ensureBundledOpenClawRuntime(context);
   // Install skill dependencies first (for all platforms)
   installSkillDependencies();

@@ -486,11 +486,12 @@ import {
   loadOpenClawSessionPolicyConfig,
   saveOpenClawSessionPolicyConfig,
 } from './openclawSessionPolicy/store';
-import { initPaperPipelineServiceManager } from './paperPipeline/paperPipelineServiceManager';
+import { seedLiteratureMcpServer } from './paperPipeline/literatureMcpSeed';
 import {
   readPaperPipelineModelConfig,
   writePaperPipelineModelConfig,
 } from './paperPipeline/paperPipelineConfig';
+import { initPaperPipelineServiceManager } from './paperPipeline/paperPipelineServiceManager';
 import { registerVoiceInputPermissionHandler } from './permissions/voiceInputPermission';
 import { isHiddenUserPluginId } from './plugins/pluginManager';
 import { SkillManager } from './skills/skillManager';
@@ -13925,6 +13926,19 @@ if (!gotTheLock) {
       console.warn('[Main] installDefaultPresets failed (non-fatal):', err);
     }
     profiler.measure('installDefaultPresets');
+
+    // Seed the literature-manager MCP server from the build environment
+    // (dev → localhost; packaged → LITERATURE_MCP__URL from
+    // Resources/.env.production). Same timing rationale as
+    // installDefaultPresets above: runs before the startup config sync so a
+    // newly created server lands in openclaw.json on the first sync.
+    profiler.mark('seedLiteratureMcpServer');
+    try {
+      seedLiteratureMcpServer(getMcpRuntime().getStore());
+    } catch (err) {
+      console.warn('[Main] literature MCP seed failed (non-fatal):', err);
+    }
+    profiler.measure('seedLiteratureMcpServer');
 
     // An interrupted Windows installer can leave an empty resources/cfmind
     // directory plus win-resources.tar. Recover it before config sync because

@@ -61,6 +61,10 @@
     {
       "from": "build/icons/png/512x512.png",
       "to": "app-icon/512x512.png"
+    },
+    {
+      "from": ".env.production",
+      "to": ".env.production"
     }
   ],
   "protocols": [
