@@ -178,6 +178,20 @@ const BrowserWebAccessSettings: React.FC<BrowserWebAccessSettingsProps> = ({
           )}
         />
 
+        <SettingRow
+          title={i18nService.t('browserHeadless')}
+          description={i18nService.t('browserHeadlessDescription')}
+          control={(
+            <input
+              id="browser-headless"
+              type="checkbox"
+              checked={value.headless === true}
+              onChange={(e) => update({ headless: e.target.checked })}
+              className="mt-1 h-3.5 w-3.5 text-primary focus:ring-primary bg-surface border-border rounded"
+            />
+          )}
+        />
+
         <HostnameList
           title={i18nService.t('browserBlockedHostnames')}
           description={i18nService.t('browserBlockedHostnamesDescription')}
