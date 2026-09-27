@@ -287,7 +287,7 @@ FunctionEnd
     for ($$i = 0; $$i -lt 30; $$i++) {\
       $$procs = @();\
       $$procs += Get-Process -Name LiteratureAI -ErrorAction SilentlyContinue;\
-      $$procs += Get-Process node -ErrorAction SilentlyContinue | Where-Object { $$_.Path -like \"*${U+6587}${U+732E}${U+667A}${U+80FD}${U+52A9}${U+624B}*\" };\
+      $$procs += Get-Process node -ErrorAction SilentlyContinue | Where-Object { $$_.Path -like \"*LiteratureAI*\" };\
       if ($$procs.Count -eq 0) { exit 0 };\
       $$procs | Stop-Process -Force -ErrorAction SilentlyContinue;\
       Start-Sleep -Milliseconds 500;\
@@ -313,7 +313,7 @@ FunctionEnd
     $$ts = Get-Date -Format \"yyyy-MM-dd HH:mm:ss\";\
     $$procs = @();\
     $$procs += Get-Process -Name LiteratureAI -ErrorAction SilentlyContinue;\
-    $$procs += Get-Process node -ErrorAction SilentlyContinue | Where-Object { $$_.Path -like \"*${U+6587}${U+732E}${U+667A}${U+80FD}${U+52A9}${U+624B}*\" };\
+    $$procs += Get-Process node -ErrorAction SilentlyContinue | Where-Object { $$_.Path -like \"*LiteratureAI*\" };\
     foreach ($$p in $$procs) {\
       $$fp = \"unknown\";\
       try { if ($$p.Path) { $$fp = $$p.Path } } catch { };\
