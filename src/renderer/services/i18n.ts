@@ -3318,9 +3318,7 @@ const translations: Record<LanguageType, Record<string, string>> = {
 
     // 首次启动欢迎页（协议 + 登录合并）
     welcomeTitle: '登录到 文献智能助手',
-    welcomePromo: '登录即送百万Token',
     welcomeLogin: '登录',
-    welcomeCustomModel: '自定义模型',
     welcomeAgreementNotice: '继续即表示您已阅读并同意{link}',
     welcomeAgreementLinkText: '《网易有道文献智能助手服务协议》',
     welcomeCopyright: '© {year} 网易有道',
@@ -7020,9 +7018,7 @@ const translations: Record<LanguageType, Record<string, string>> = {
 
     // First-launch welcome screen (terms + login merged)
     welcomeTitle: 'Log in to LiteratureAI',
-    welcomePromo: 'Log in for 1M free tokens',
     welcomeLogin: 'Log in',
-    welcomeCustomModel: 'Custom Model',
     welcomeAgreementNotice: 'By continuing, you agree to the {link}',
     welcomeAgreementLinkText: 'NetEase Youdao LiteratureAI Terms of Service',
     welcomeCopyright: '© {year} NetEase Youdao',

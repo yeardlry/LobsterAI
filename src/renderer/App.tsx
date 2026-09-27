@@ -210,6 +210,11 @@ const App: React.FC = () => {
   const pendingPermission = useSelector(selectFirstCurrentSessionPendingPermission);
   const pendingPermissions = useSelector(selectPendingPermissions);
   const authUser = useSelector((state: RootState) => state.auth.user);
+  const authIsLoading = useSelector((state: RootState) => state.auth.isLoading);
+  // Mandatory full-page login gate: unauthenticated users (first launch, after
+  // logout, or after session expiry) always land on the welcome screen.
+  // Enterprise builds that hide login keep the legacy sidebar-only entry.
+  const loginGateRequired = enterpriseConfig?.ui?.login !== 'hide';
   const isEnterpriseAccount = useSelector(selectIsEnterpriseAccount);
   const isWindows = window.electron.platform === 'win32';
   const [minimizedPermissionIds, setMinimizedPermissionIds] = useState<string[]>([]);
@@ -1062,10 +1067,6 @@ const App: React.FC = () => {
   const handleWelcomeCancelLogin = useCallback(() => {
     setWelcomeLoginPending(false);
   }, []);
-  const handleWelcomeCustomModel = useCallback(async () => {
-    await acceptPrivacyAgreement();
-    handleShowSettings({ initialTab: 'model' });
-  }, [acceptPrivacyAgreement, handleShowSettings]);
 
   // Release the first-launch gate once login completes — including when the
   // browser callback lands after the user tapped back on the welcome screen.
@@ -1602,7 +1603,9 @@ const App: React.FC = () => {
     />
   ) : null;
 
-  if (!isInitialized) {
+  // Hold the splash while a stored session is still being restored, so a
+  // logged-in user never flashes the login gate before auth state lands.
+  if (!isInitialized || (loginGateRequired && privacyAgreed !== false && !authUser && authIsLoading)) {
     // index.html's static splash shows the same startup page until React
     // mounts; rendering EngineStartupOverlay from the first frame keeps the
     // whole startup on one continuous screen with no visual handoff.
@@ -1665,10 +1668,13 @@ const App: React.FC = () => {
     );
   }
 
-  if (privacyAgreed === false) {
-    // First-launch gate: render only the welcome screen — no app chrome (title
-    // bar/sidebar) until the agreement is accepted. An invisible drag strip
-    // keeps the frameless window movable; Windows caption buttons stay on top.
+  if (privacyAgreed === false || (loginGateRequired && !authUser)) {
+    // Full-page login gate: on first launch it doubles as the terms-consent
+    // screen; afterwards it shows whenever the user is logged out (manual
+    // logout or session expiry). No app chrome (title bar/sidebar) renders,
+    // so the sidebar LoginButton popup is unreachable while logged out — the
+    // component is kept for now. An invisible drag strip keeps the frameless
+    // window movable; Windows caption buttons stay on top.
     return (
       <div className="relative h-screen overflow-hidden">
         {toastMessage && (
@@ -1684,7 +1690,6 @@ const App: React.FC = () => {
           onLogin={handleWelcomeLogin}
           loginPending={welcomeLoginPending}
           onCancelLogin={handleWelcomeCancelLogin}
-          onCustomModel={handleWelcomeCustomModel}
         />
         <div className="draggable absolute inset-x-0 top-0 z-[70] h-9" />
         {isWindows && (

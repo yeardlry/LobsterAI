@@ -18,16 +18,15 @@ interface WelcomeDialogProps {
   onLogin: () => void;
   loginPending: boolean;
   onCancelLogin: () => void;
-  onCustomModel: () => void;
 }
 
-// First-launch gate merging terms consent and login into one screen:
-// continuing via either action counts as accepting the service agreement.
+// Full-page login gate: on first launch it doubles as the terms-consent
+// screen (continuing via login counts as accepting the service agreement);
+// afterwards it shows whenever the user is logged out.
 const WelcomeDialog: React.FC<WelcomeDialogProps> = ({
   onLogin,
   loginPending,
   onCancelLogin,
-  onCustomModel,
 }) => {
   const handleTermsClick = async (e: React.MouseEvent) => {
     e.preventDefault();
@@ -110,25 +109,12 @@ const WelcomeDialog: React.FC<WelcomeDialogProps> = ({
             </>
           ) : (
             <>
-              {/* promo: quiet tinted chip sitting right above login, so the incentive reads as "log in to get it" */}
-              <div className="mb-3 px-3 py-1 rounded-full border text-xs font-medium select-none text-[#E5482C] bg-[#FF5A36]/10 border-[#FF5A36]/20 dark:text-[#FF9275] dark:bg-[#FF6D4A]/[0.14] dark:border-[#FF6D4A]/30">
-                {i18nService.t('welcomePromo')}
-              </div>
-
               {/* primary: login */}
               <button
                 onClick={onLogin}
                 className="w-full h-11 rounded-xl text-sm font-medium bg-foreground text-surface transition-opacity hover:opacity-90 active:opacity-80 outline-none"
               >
                 {i18nService.t('welcomeLogin')}
-              </button>
-
-              {/* secondary: custom model — quiet ghost style */}
-              <button
-                onClick={onCustomModel}
-                className="mt-3 w-full h-11 rounded-xl text-sm font-medium text-secondary border border-border bg-transparent hover:text-foreground hover:bg-surface-raised transition-colors outline-none"
-              >
-                {i18nService.t('welcomeCustomModel')}
               </button>
             </>
           )}
