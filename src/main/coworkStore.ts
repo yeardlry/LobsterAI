@@ -46,6 +46,7 @@ import {
   type ModelThinkingLevel,
   parseModelThinkingLevel,
 } from '../shared/providers/modelThinking';
+import { APP_DISPLAY_NAME } from './appConstants';
 import {
   ContinuityCapsuleSource,
   type CoworkContinuityCapsule,
@@ -2061,7 +2062,7 @@ export class CoworkStore {
       timestamp: row.created_at,
       preview: getCoworkRailPreview(
         row.preview_content,
-        row.type === 'user' ? `Turn ${index + 1}` : 'LobsterAI',
+        row.type === 'user' ? `Turn ${index + 1}` : APP_DISPLAY_NAME,
         COWORK_RAIL_TOOLTIP_PREVIEW_MAX_LENGTH,
       ),
       contentLen: row.content_len,

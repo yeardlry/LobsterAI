@@ -1334,7 +1334,7 @@ export const inspectMigrationArchiveSync = (
   });
 
   if (!state.root || state.entryCount <= 0) {
-    throw new Error('Backup archive is empty or missing LobsterAI user data.');
+    throw new Error('Backup archive is empty or missing LiteratureAI user data.');
   }
   if (requireSqliteDatabase && !state.hasSqliteDatabase) {
     throw new Error(`Backup archive is missing ${DB_FILENAME}.`);
@@ -1402,7 +1402,7 @@ const extractMigrationArchiveToTempSync = (
 
     const sourceRoot = path.join(tempRoot, ...info.root.split('/'));
     if (!fs.existsSync(sourceRoot) || !fs.statSync(sourceRoot).isDirectory()) {
-      throw new Error('Backup archive did not extract a valid LobsterAI user data directory.');
+      throw new Error('Backup archive did not extract a valid LiteratureAI user data directory.');
     }
     if (options.validateArchiveContent ?? true) {
       validateExtractedArchiveContentSync(sourceRoot);

@@ -2,10 +2,11 @@
  * Logger module using electron-log
  * Intercepts console.* methods and writes to file + console simultaneously.
  *
- * Log file locations:
- *   macOS:   ~/Library/Logs/LobsterAI/main-YYYY-MM-DD.log
- *   Windows: %USERPROFILE%\AppData\Roaming\LobsterAI\logs\main-YYYY-MM-DD.log
- *   Linux:   ~/.config/LobsterAI/logs/main-YYYY-MM-DD.log
+ * Log file locations (pinned to the English APP_NAME so the on-disk
+ * directory never derives from the localized display name):
+ *   macOS:   ~/Library/Logs/LiteratureAI/main-YYYY-MM-DD.log
+ *   Windows: %APPDATA%\LiteratureAI\logs\main-YYYY-MM-DD.log
+ *   Linux:   ~/.config/LiteratureAI/logs/main-YYYY-MM-DD.log
  *
  * Rotation policy:
  *   - Daily log files (one file per calendar day)
@@ -13,9 +14,12 @@
  *   - Files older than 7 days are pruned on startup
  */
 
-import path from 'path';
-import fs from 'fs';
+import { app } from 'electron';
 import log from 'electron-log/main';
+import fs from 'fs';
+import path from 'path';
+
+import { APP_NAME } from './appConstants';
 
 const LOG_RETENTION_DAYS = 7;
 const LOG_MAX_SIZE = 80 * 1024 * 1024; // 80 MB
@@ -36,10 +40,15 @@ function logDir(): string {
  * Must be called early in main process, before any console output.
  */
 export function initLogger(): void {
-  // Daily rotation: one file per calendar day
-  log.transports.file.resolvePathFn = (vars) => {
-    _logDir = vars.libraryDefaultDir;
-    return path.join(vars.libraryDefaultDir, `main-${todayStr()}.log`);
+  // Daily rotation: one file per calendar day. The directory is rebuilt from
+  // APP_NAME instead of vars.libraryDefaultDir (which derives from the
+  // localized app name) so logs always land in an English-named directory.
+  const logRoot = process.platform === 'darwin'
+    ? path.join(app.getPath('home'), 'Library', 'Logs', APP_NAME)
+    : path.join(app.getPath('appData'), APP_NAME, 'logs');
+  log.transports.file.resolvePathFn = () => {
+    _logDir = logRoot;
+    return path.join(logRoot, `main-${todayStr()}.log`);
   };
 
   // File transport config

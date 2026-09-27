@@ -1,7 +1,7 @@
 {
-  "appId": "com.lobsterai.app",
-  "productName": "LobsterAI",
-  "executableName": "LobsterAI",
+  "appId": "com.literatureai.app",
+  "productName": "文献智能助手",
+  "executableName": "LiteratureAI",
   "directories": {
     "output": "release"
   },
@@ -69,8 +69,8 @@
   ],
   "protocols": [
     {
-      "name": "LobsterAI",
-      "schemes": ["lobsterai"]
+      "name": "LiteratureAI",
+      "schemes": ["literatureai"]
     }
   ],
   "mac": {

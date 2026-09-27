@@ -149,6 +149,6 @@ if (usesPlaceholder) {
     console.warn('[WebBuild] no WebSetup artifact found to delete; check the build output.');
   }
   const version = require('../package.json').version;
-  console.log(`[WebBuild] next: upload release/LobsterAI-${version}-x64.nsis.7z, then run`);
+  console.log(`[WebBuild] next: upload release/LiteratureAI-${version}-x64.nsis.7z, then run`);
   console.log(`[WebBuild]   npm run dist:win:web -- --keyfrom ${keyfrom} --pkg-url <uploaded-url>`);
 }
