@@ -79,4 +79,41 @@ export class AgentManager {
       workingDirectory: '',
     });
   }
+
+  /**
+   * Install every preset listed in {@link DEFAULT_PRESET_IDS}. Designed to
+   * run on every app startup so freshly-packaged installs ship with the
+   * default expert suite out of the box.
+   *
+   * `addPresetAgent` is already idempotent — it short-circuits when the
+   * preset agent already exists. So re-running this on every startup is
+   * safe: first launch installs, later launches are no-ops. If the user
+   * explicitly deletes a default preset agent, the next startup will
+   * re-install it (the user accepted that behaviour for the bio-research
+   * preset; to permanently suppress a default preset the user must remove
+   * its id from {@link DEFAULT_PRESET_IDS} in code).
+   *
+   * Returns the agents that were touched — for a default preset that is
+   * already installed this is the existing record (not null), so callers
+   * can log "1 preset present" but should not assume it was just created.
+   * Use {@link getPresetAgents} before/after to detect actual new installs.
+   */
+  installDefaultPresets(defaultModel?: string): Agent[] {
+    const installed: Agent[] = [];
+    for (const presetId of DEFAULT_PRESET_IDS) {
+      const agent = this.addPresetAgent(presetId, defaultModel);
+      if (agent) installed.push(agent);
+    }
+    return installed;
+  }
 }
+
+/**
+ * Preset IDs that ship with the packaged app and are installed
+ * automatically on first launch. Other presets stay opt-in via the
+ * "专家套件 → 已安装" UI.
+ *
+ * Update this list (and add a matching entry to `PRESET_AGENTS`) to make
+ * a new preset ship by default.
+ */
+export const DEFAULT_PRESET_IDS: readonly string[] = ['bio-research'];
