@@ -54,11 +54,13 @@ export const getHtmlSharePublicBaseUrl = (): string => {
 
 /**
  * Literature backend base URL (RuoYi /lit/* auth endpoints).
- * Local service by default; override with LIT_SERVER_BASE_URL in development.
+ * Local service by default; override with LIT_SERVER_BASE_URL in
+ * development or in packaged builds (sourced from Resources/.env.production
+ * — see envProduction.ts / applyEnvProductionVars).
  */
 export const getLitServerBaseUrl = (): string => {
   const override = process.env.LIT_SERVER_BASE_URL?.trim();
-  if (process.env.NODE_ENV === 'development' && override) {
+  if (override && (process.env.NODE_ENV === 'development' || app.isPackaged)) {
     if (loggedDevelopmentServerBaseUrl !== override) {
       console.warn(`[Endpoints] routing literature auth traffic to ${override}`);
       loggedDevelopmentServerBaseUrl = override;

@@ -1,20 +1,20 @@
-import { app } from 'electron';
-import fs from 'fs';
-import path from 'path';
-
+import { isProdLikeBuild, loadEnvProduction, parseEnvFileContent } from '../libs/envProduction';
 import type { McpStore } from '../mcp/mcpStore';
+
+// Re-exported for the colocated tests (the parser itself now lives in
+// envProduction.ts alongside the other `.env.production` machinery).
+export { parseEnvFileContent };
 
 /**
  * Literature-manager MCP seed — keeps exactly one remote MCP server pointing
  * at the literature backend, derived from the build environment:
  *
- * - Dev (`app.isPackaged === false`): fixed `http://localhost:3000/mcp`.
- * - Packaged: `LITERATURE_MCP_URL` from `Resources/.env.production`
- *   (see electron-builder.json extraResources); falls back to the dev URL
- *   when the file/var is missing so a broken bundle never bricks startup.
- * - Local prod debugging: `LOBSTERAI_LIT_MCP_FORCE_PROD=1` (npm run
- *   electron:dev:prod) makes an unpackaged dev build behave like packaged —
- *   reads `.env.production` from the project root instead of Resources.
+ * - Dev (plain `npm run electron:dev`): fixed `http://localhost:3000/mcp`.
+ * - Packaged / forced-prod dev (`npm run electron:dev:prod`):
+ *   `LITERATURE_MCP_URL` from `.env.production` (Resources/ for packaged
+ *   builds, project root for forced-prod runs — see envProduction.ts); falls
+ *   back to the dev URL when the file/var is missing so a broken bundle
+ *   never bricks startup.
  *
  * Seeding runs once per startup in `main.ts` before the first OpenClaw
  * config sync, mirroring `installDefaultPresets`. The strategy is
@@ -25,12 +25,6 @@ import type { McpStore } from '../mcp/mcpStore';
 
 export const LiteratureMcpSeedConstants = {
   EnvVarUrl: 'LITERATURE_MCP_URL',
-  /**
-   * Set to `1` (npm run electron:dev:prod) to make an unpackaged dev build
-   * resolve the URL the way a packaged build would — via `.env.production`
-   * from the project root.
-   */
-  ForceProdEnvVar: 'LOBSTERAI_LIT_MCP_FORCE_PROD',
   ServerName: 'literature-manager',
   ServerDescription: 'Literature manager MCP (auto-seeded at startup)',
   DevUrl: 'http://localhost:3000/mcp',
@@ -50,31 +44,6 @@ export type LiteratureMcpSeedPlan =
   | { action: 'create'; url: string }
   | { action: 'update'; serverId: string; url: string }
   | { action: 'none' };
-
-/**
- * Parse KEY=VALUE lines from an env file. Skips blank lines and `#`
- * comments; strips matching quotes around values. Deliberately minimal —
- * no dotenv dependency for exactly one variable.
- */
-export function parseEnvFileContent(content: string): Record<string, string> {
-  const result: Record<string, string> = {};
-  for (const rawLine of content.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line || line.startsWith('#')) continue;
-    const eq = line.indexOf('=');
-    if (eq <= 0) continue;
-    const key = line.slice(0, eq).trim();
-    let value = line.slice(eq + 1).trim();
-    if (
-      (value.startsWith('"') && value.endsWith('"') && value.length >= 2)
-      || (value.startsWith("'") && value.endsWith("'") && value.length >= 2)
-    ) {
-      value = value.slice(1, -1);
-    }
-    if (key) result[key] = value;
-  }
-  return result;
-}
 
 function isHttpUrl(value: string): boolean {
   return value.startsWith('http://') || value.startsWith('https://');
@@ -118,15 +87,6 @@ export function planLiteratureMcpSeed(
   return { action: 'update', serverId: matched.id, url: targetUrl };
 }
 
-function readEnvProductionFile(envPath: string): string | null {
-  try {
-    return fs.readFileSync(envPath, 'utf8');
-  } catch {
-    console.warn(`[LiteratureMCP] ${envPath} not found or unreadable; falling back to ${LiteratureMcpSeedConstants.DevUrl}`);
-    return null;
-  }
-}
-
 /**
  * Seed the literature-manager MCP server into the local store. Runs before
  * the startup OpenClaw config sync so a freshly created server lands in
@@ -134,24 +94,12 @@ function readEnvProductionFile(envPath: string): string | null {
  * stored server already matches.
  */
 export function seedLiteratureMcpServer(store: McpStore): void {
-  const forceProd = process.env[LiteratureMcpSeedConstants.ForceProdEnvVar] === '1';
-  const isProd = app.isPackaged || forceProd;
-  let env: Record<string, string> = {};
-  if (isProd) {
-    // Packaged builds read Resources/.env.production; a forced-prod dev run
-    // reads the file from the project root (app.getAppPath() === repo root).
-    const envPath = app.isPackaged
-      ? path.join(process.resourcesPath, '.env.production')
-      : path.join(app.getAppPath(), '.env.production');
-    const content = readEnvProductionFile(envPath);
-    if (content !== null) {
-      env = parseEnvFileContent(content);
-    }
-  }
+  const isProd = isProdLikeBuild();
+  const env = isProd ? loadEnvProduction() : {};
   const { url, source } = resolveLiteratureMcpTargetUrl(env);
   if (isProd && source === 'fallback' && Object.keys(env).length > 0) {
     console.warn(
-      `[LiteratureMCP] ${LiteratureMcpSeedConstants.EnvVarUrl} is missing or invalid in Resources/.env.production; falling back to ${LiteratureMcpSeedConstants.DevUrl}`,
+      `[LiteratureMCP] ${LiteratureMcpSeedConstants.EnvVarUrl} is missing or invalid in .env.production; falling back to ${LiteratureMcpSeedConstants.DevUrl}`,
     );
   }
 

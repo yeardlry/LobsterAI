@@ -330,6 +330,7 @@ import {
   resolveEnterpriseConfigPath,
   syncEnterpriseConfig,
 } from './libs/enterpriseConfigSync';
+import { applyEnvProductionVars } from './libs/envProduction';
 import {
   createOfficePreviewSession,
   createPreviewSession,
@@ -13926,6 +13927,11 @@ if (!gotTheLock) {
       console.warn('[Main] installDefaultPresets failed (non-fatal):', err);
     }
     profiler.measure('installDefaultPresets');
+
+    // Apply prod-only env overrides (.env.production) before anything reads
+    // them — notably LIT_SERVER_BASE_URL for the lit login/API traffic.
+    // No-op in plain dev runs; existing process env always wins.
+    applyEnvProductionVars();
 
     // Seed the literature-manager MCP server from the build environment
     // (dev → localhost; packaged → LITERATURE_MCP_URL from
