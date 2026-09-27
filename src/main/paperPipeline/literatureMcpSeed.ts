@@ -9,7 +9,7 @@ import type { McpStore } from '../mcp/mcpStore';
  * at the literature backend, derived from the build environment:
  *
  * - Dev (`app.isPackaged === false`): fixed `http://localhost:3000/mcp`.
- * - Packaged: `LITERATURE_MCP__URL` from `Resources/.env.production`
+ * - Packaged: `LITERATURE_MCP_URL` from `Resources/.env.production`
  *   (see electron-builder.json extraResources); falls back to the dev URL
  *   when the file/var is missing so a broken bundle never bricks startup.
  * - Local prod debugging: `LOBSTERAI_LIT_MCP_FORCE_PROD=1` (npm run
@@ -24,7 +24,7 @@ import type { McpStore } from '../mcp/mcpStore';
  */
 
 export const LiteratureMcpSeedConstants = {
-  EnvVarUrl: 'LITERATURE_MCP__URL',
+  EnvVarUrl: 'LITERATURE_MCP_URL',
   /**
    * Set to `1` (npm run electron:dev:prod) to make an unpackaged dev build
    * resolve the URL the way a packaged build would — via `.env.production`
@@ -82,7 +82,7 @@ function isHttpUrl(value: string): boolean {
 
 /**
  * Resolve the target URL from parsed env vars. A missing/blank/invalid
- * `LITERATURE_MCP__URL` falls back to the dev URL rather than disabling the
+ * `LITERATURE_MCP_URL` falls back to the dev URL rather than disabling the
  * server.
  */
 export function resolveLiteratureMcpTargetUrl(

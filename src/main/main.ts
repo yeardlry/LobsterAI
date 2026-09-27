@@ -13928,7 +13928,7 @@ if (!gotTheLock) {
     profiler.measure('installDefaultPresets');
 
     // Seed the literature-manager MCP server from the build environment
-    // (dev → localhost; packaged → LITERATURE_MCP__URL from
+    // (dev → localhost; packaged → LITERATURE_MCP_URL from
     // Resources/.env.production). Same timing rationale as
     // installDefaultPresets above: runs before the startup config sync so a
     // newly created server lands in openclaw.json on the first sync.

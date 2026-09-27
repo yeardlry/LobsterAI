@@ -30,14 +30,14 @@ describe('parseEnvFileContent', () => {
       [
         '# comment',
         '',
-        'LITERATURE_MCP__URL=' + PROD_URL,
+        'LITERATURE_MCP_URL=' + PROD_URL,
         '  OTHER=x  ',
         'novalue',
         '=missing-key',
       ].join('\n'),
     );
     expect(env).toEqual({
-      LITERATURE_MCP__URL: PROD_URL,
+      LITERATURE_MCP_URL: PROD_URL,
       OTHER: 'x',
     });
   });
@@ -48,22 +48,22 @@ describe('parseEnvFileContent', () => {
   });
 
   test('handles CRLF line endings', () => {
-    const env = parseEnvFileContent(`LITERATURE_MCP__URL=${PROD_URL}\r\nOTHER=y\r\n`);
-    expect(env.LITERATURE_MCP__URL).toBe(PROD_URL);
+    const env = parseEnvFileContent(`LITERATURE_MCP_URL=${PROD_URL}\r\nOTHER=y\r\n`);
+    expect(env.LITERATURE_MCP_URL).toBe(PROD_URL);
     expect(env.OTHER).toBe('y');
   });
 });
 
 describe('resolveLiteratureMcpTargetUrl', () => {
   test('uses the env value when present and http(s)', () => {
-    expect(resolveLiteratureMcpTargetUrl({ LITERATURE_MCP__URL: PROD_URL })).toEqual({
+    expect(resolveLiteratureMcpTargetUrl({ LITERATURE_MCP_URL: PROD_URL })).toEqual({
       url: PROD_URL,
       source: 'env',
     });
   });
 
   test('falls back to the dev URL when missing, blank, or non-http', () => {
-    for (const env of [{}, { LITERATURE_MCP__URL: '' }, { LITERATURE_MCP__URL: '  ' }, { LITERATURE_MCP__URL: 'ftp://example.com' }]) {
+    for (const env of [{}, { LITERATURE_MCP_URL: '' }, { LITERATURE_MCP_URL: '  ' }, { LITERATURE_MCP_URL: 'ftp://example.com' }]) {
       expect(resolveLiteratureMcpTargetUrl(env)).toEqual({
         url: LiteratureMcpSeedConstants.DevUrl,
         source: 'fallback',
