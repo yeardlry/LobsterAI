@@ -26,6 +26,7 @@ import { buildGoalSettingMessageMetadata } from '../common/goalCommandDisplay';
 import type { OpenClawSessionPatch } from '../common/openclawSession';
 import { buildSessionTitleFromInput } from '../common/sessionTitle';
 import { buildScheduledTaskEnginePrompt } from '../scheduledTask/enginePrompt';
+import { ScheduledTaskMetaStore } from '../scheduledTask/metaStore';
 import {
   migrateScheduledTaskRunsToOpenclaw,
   migrateScheduledTasksToOpenclaw,
@@ -152,6 +153,7 @@ import {
   OpenClawEngineIpc,
   OpenClawGatewayRepairErrorCode,
 } from '../shared/openclawEngine/constants';
+import { LitAuthHeader } from '../shared/paperPipeline/constants';
 import { PlatformRegistry } from '../shared/platform';
 import {
   ModelRuntimeProfile,
@@ -183,7 +185,7 @@ import { createLocalFileProtocolResponse } from './artifactLocalFileProtocol';
 import { authQuotaGateStateFromQuota, AuthSubscriptionStatus, createDefaultAuthQuotaGateState, normalizeAuthQuota } from './authQuota';
 import { type AutoLaunchStatus, getAutoLaunchStatus, isAutoLaunched, setAutoLaunchEnabled } from './autoLaunchManager';
 import { getRecentComputerUseLogEntries } from './computerUse/computerUseLogs';
-import { type CoworkForkContextMessage, type CoworkMessage, CoworkStore } from './coworkStore';
+import { type Agent, type CoworkForkContextMessage, type CoworkMessage, CoworkStore } from './coworkStore';
 import {
   buildEnterpriseAccountRequestHeaders,
   clearEnterpriseAccountContext,
@@ -485,6 +487,10 @@ import {
   saveOpenClawSessionPolicyConfig,
 } from './openclawSessionPolicy/store';
 import { initPaperPipelineServiceManager } from './paperPipeline/paperPipelineServiceManager';
+import {
+  readPaperPipelineModelConfig,
+  writePaperPipelineModelConfig,
+} from './paperPipeline/paperPipelineConfig';
 import { registerVoiceInputPermissionHandler } from './permissions/voiceInputPermission';
 import { isHiddenUserPluginId } from './plugins/pluginManager';
 import { SkillManager } from './skills/skillManager';
@@ -2183,6 +2189,50 @@ const getCoworkStore = () => {
   return coworkStore;
 };
 
+let scheduledTaskMetaStore: ScheduledTaskMetaStore | null = null;
+const getScheduledTaskMetaStore = (): ScheduledTaskMetaStore => {
+  if (!scheduledTaskMetaStore) {
+    scheduledTaskMetaStore = new ScheduledTaskMetaStore(getStore().getDatabase());
+  }
+  return scheduledTaskMetaStore;
+};
+
+/**
+ * Scheduled tasks with form-selected skills run as derived synthetic agents.
+ * They exist ONLY in this config-sync view (never in the `agents` table/UI),
+ * so OpenClaw's closed cron schema can still carry a per-job skill allowlist
+ * through `agents.list[].skills` + `agentId` on the cron job.
+ */
+const listConfigSyncAgents = (): Agent[] => {
+  const agents = getCoworkStore().listAgents();
+  const knownAgentIds = new Set(agents.map(agent => agent.id));
+  const synthetic: Agent[] = getScheduledTaskMetaStore()
+    .listAgents()
+    // Defensive: never shadow a real agent if ids ever collide.
+    .filter(meta => !knownAgentIds.has(meta.agentId))
+    .map(meta => ({
+      id: meta.agentId,
+      name: meta.taskName,
+      description: '',
+      systemPrompt: '',
+      identity: '',
+      model: '', // Falls back to the default primary model in buildAgentEntry.
+      thinkingLevel: '',
+      workingDirectory: '',
+      icon: '',
+      skillIds: meta.skillIds,
+      subagentAllowAgentIds: [] as string[],
+      enabled: true,
+      pinned: false,
+      isDefault: false,
+      source: 'custom',
+      presetId: '',
+      createdAt: 0,
+      updatedAt: 0,
+    }));
+  return [...agents, ...synthetic];
+};
+
 let agentManager: AgentManager | null = null;
 const getAgentManager = () => {
   if (!agentManager) {
@@ -2344,7 +2394,7 @@ const getOpenClawConfigSync = (): OpenClawConfigSync => {
       getAskUserCallbackUrl: () => getMcpRuntime().getAskUserCallbackUrl(),
       getMediaCallbackUrl: () => getMcpRuntime().getMediaCallbackUrl(),
       getMcpBridgeSecret: () => getMcpRuntime().getBridgeSecret(),
-      getAgents: () => getCoworkStore().listAgents(),
+      getAgents: listConfigSyncAgents,
       getUserPlugins: () =>
         getCoworkStore()
           .listUserPlugins()
@@ -6666,7 +6716,11 @@ if (!gotTheLock) {
     const baseUrl = getLitServerBaseUrl();
     const resp = await net.fetch(`${baseUrl}/lit/getInfo`, {
       method: 'GET',
-      headers: { Authorization: `Bearer ${accessToken}` },
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        // Hint the lit backend's filter to skip dual-service dispatch.
+        [LitAuthHeader.Name]: LitAuthHeader.Value,
+      },
     });
     if (resp.status === 401) {
       return null;
@@ -7163,6 +7217,14 @@ if (!gotTheLock) {
 
   ipcMain.handle(AuthIpcChannel.GetProfileSummary, async () => {
     try {
+      // Lit sessions don't use the OAuth portal's profile endpoint. The
+      // profile is established locally by `LitLogin` (see line ~6801
+      // `saveAuthUser(profile)`). Skip the fetch so we don't trigger a
+      // doomed `fetchWithAuth` call — which would fail because lit's
+      // refreshToken is intentionally empty.
+      if (isLitAuthSession()) {
+        return { success: true, data: null };
+      }
       const tokens = getAuthTokens();
       if (!tokens) return { success: false };
       const requestAccountGeneration = authAccountGeneration;
@@ -7276,6 +7338,11 @@ if (!gotTheLock) {
           headers: {
             Authorization: `Bearer ${tokens.accessToken}`,
             'Content-Type': 'application/json',
+            // Hint the lit backend's filter to skip dual-service dispatch
+            // for the lit branch. OAuth logout is unaffected.
+            ...(litSession
+              ? { [LitAuthHeader.Name]: LitAuthHeader.Value }
+              : {}),
             ...enterpriseHeaders,
           },
           body: logoutBody,
@@ -7346,6 +7413,14 @@ if (!gotTheLock) {
 
   ipcMain.handle(AuthIpcChannel.GetModels, async () => {
     try {
+      // Lit sessions don't use the OAuth portal's model catalogue; the
+      // lit backend doesn't expose `/api/models/available`. Skip the
+      // fetch so we don't trigger a doomed `fetchWithAuth` call —
+      // which would fail because lit's refreshToken is intentionally
+      // empty and would throw "Auth tokens were cleared before refresh".
+      if (isLitAuthSession()) {
+        return { success: true, models: [] };
+      }
       const tokens = getAuthTokens();
       if (!tokens) {
         console.log('[Auth:getModels] No auth tokens available');
@@ -10497,6 +10572,8 @@ if (!gotTheLock) {
     getOpenClawRuntimeAdapter: () => openClawRuntimeAdapter,
     getCoworkSessionTitle: (sessionId: string) =>
       getCoworkStore().getSession(sessionId, 0)?.title ?? null,
+    getMetaStore: getScheduledTaskMetaStore,
+    syncOpenClawConfig,
   };
   registerScheduledTaskHandlers(scheduledTaskHandlerDeps);
 
@@ -10520,9 +10597,14 @@ if (!gotTheLock) {
     coworkRuntime: () => getCoworkEngineRouter(),
     coworkStore: () => getCoworkStore(),
     resolveAgentCwd: resolveAgentDefaultWorkingDirectory,
+    // Pipeline model config (kv) — thunk for the same init-order reason as
+    // the singletons above.
+    getPipelineModelConfig: () => readPaperPipelineModelConfig(getStore()),
   });
   registerPaperPipelineHandlers({
     isLitAuthSession,
+    readPipelineModelConfig: () => readPaperPipelineModelConfig(getStore()),
+    writePipelineModelConfig: (raw) => writePaperPipelineModelConfig(getStore(), raw),
   });
 
   registerNimQrLoginHandlers({
@@ -13816,6 +13898,33 @@ if (!gotTheLock) {
     } catch (err) {
       console.warn('[OpenClaw] main agent workspace migration failed (non-fatal):', err);
     }
+
+    // Install the presets that ship with the packaged app (see
+    // DEFAULT_PRESET_IDS). Runs before the startup OpenClaw config sync so
+    // newly-installed agents land in openclaw.json on the first sync — no
+    // hot-reload needed. installDefaultPresets is idempotent via
+    // addPresetAgent, so re-running on every startup is safe and intentional:
+    // deleting a default preset agent causes the next startup to re-install
+    // it, matching the product decision "如果我删除了 打包之后就没有" →
+    // disappears only when re-install would no longer happen.
+    profiler.mark('installDefaultPresets');
+    try {
+      const beforeIds = new Set(
+        getCoworkStore()
+          .listAgents()
+          .map(a => a.id),
+      );
+      const installedDefaults = getAgentManager().installDefaultPresets(defaultAgentModelRef);
+      const newIds = installedDefaults
+        .filter(a => !beforeIds.has(a.id))
+        .map(a => `${a.id}(${a.name})`);
+      if (newIds.length > 0) {
+        console.log(`[Main] installed default presets: ${newIds.join(', ')}`);
+      }
+    } catch (err) {
+      console.warn('[Main] installDefaultPresets failed (non-fatal):', err);
+    }
+    profiler.measure('installDefaultPresets');
 
     // An interrupted Windows installer can leave an empty resources/cfmind
     // directory plus win-resources.tar. Recover it before config sync because
