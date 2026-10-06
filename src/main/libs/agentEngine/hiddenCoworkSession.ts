@@ -221,6 +221,7 @@ export async function runHiddenCoworkSession(
         deps.runtime.off('complete', onComplete);
         deps.runtime.off('error', onError);
         deps.runtime.off('permissionRequest', onPermission);
+        deps.runtime.off('sessionStopped', onSessionStopped);
       } catch {
         /* runtime may have been disposed — best effort */
       }
@@ -264,12 +265,16 @@ export async function runHiddenCoworkSession(
       // user input. See module-level doc for the threat model.
       deps.runtime.respondToPermission(req.requestId, { behavior: 'allow' });
     };
+    const onSessionStopped = () => {
+      settle(() => reject(new Error(`hiddenCoworkSession stopped (sessionId=${sessionId})`)));
+    };
 
     deps.runtime.on('message', onMessage);
     deps.runtime.on('messageUpdate', onMessageUpdate);
     deps.runtime.on('complete', onComplete);
     deps.runtime.on('error', onError);
     deps.runtime.on('permissionRequest', onPermission);
+    deps.runtime.on('sessionStopped', onSessionStopped);
 
     const timer = setTimeout(() => {
       settle(() =>

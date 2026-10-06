@@ -245,6 +245,7 @@ export class PaperTasksService {
      * download chain and goes straight to the HTML landing page.
      */
     openAccess?: boolean | null,
+    pdfUrl?: string | null,
   ): Promise<AdvanceResult | null> {
     const api = window.electron?.paperPipeline;
     if (!api) return null;
@@ -254,7 +255,7 @@ export class PaperTasksService {
     store.dispatch(setAdvancingPmid(pmid));
     reportPaperTaskAction('advance_task_auto', { pmid, fromStatus: currentStatus });
     try {
-      const result = await api.advanceTaskAuto(pmid, currentStatus, openAccess ?? null);
+      const result = await api.advanceTaskAuto(pmid, currentStatus, openAccess ?? null, pdfUrl ?? null);
       if (!result.success || !result.data) {
         showToast(result.error ?? 'advanceTaskAuto failed');
         if (isLitStateTransitionConflict(result.error)) {
@@ -280,6 +281,16 @@ export class PaperTasksService {
     } finally {
       this.autoRunningPmids.delete(pmid);
       store.dispatch(setAdvancingPmid(null));
+    }
+  }
+
+  /** Request cancellation of the running one-click advance for one task. */
+  async cancelTaskAuto(pmid: string): Promise<void> {
+    const api = window.electron?.paperPipeline;
+    if (!api) return;
+    const result = await api.cancelTaskAuto(pmid);
+    if (!result.success) {
+      showToast(result.error ?? 'cancelTaskAuto failed');
     }
   }
 

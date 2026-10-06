@@ -47,11 +47,12 @@ import {
   getPaperPipelinePdfPath,
   getPaperPipelineXmlPath,
 } from './storage';
-import { findPipelineExpertAgentId } from './taskHiddenSession';
+import { findPipelineExpertAgentId, stopTaskHiddenSession } from './taskHiddenSession';
 import { prepareWechatDraft } from './wechatArticleService';
 import {
   cacheXml,
   extractAbstract,
+  extractDoi,
   extractTitle,
   parseAuthors,
   readCachedXml,
@@ -71,6 +72,7 @@ interface AdvanceContext {
   title: string | null;
   /** Abstract text mined from the cached XML; reused by the LLM PDF finder. */
   abstractText: string | null;
+  doi: string | null;
   categoryIds: string[];
   tagIds: string[];
   /**
@@ -88,6 +90,7 @@ interface AdvanceContext {
    * prompt so 【关键发现】 cites body-level data instead of the abstract.
    */
   fulltextMdPath: string | null;
+  fulltextSourceKind: 'pdf' | 'html' | null;
   /**
    * Landing page saved when the pre-fetch established the paper is closed
    * access. The DownloadAndUploadPdf step uses it to skip a doomed
@@ -139,6 +142,8 @@ export interface PaperAutoAdvanceOptions {
    * normal chain.
    */
   openAccess?: boolean | null;
+  /** Full PDF URL from listPendingTasks, used to restore a missing local cache. */
+  pdfUrl?: string | null;
   /**
    * Explicit hidden-session agent id override. When omitted (the common
    * case — one-click advance from the renderer, autopilot batch) the
@@ -237,6 +242,8 @@ export class PaperPipelineService {
   private readonly logs = new Map<string, PaperTaskLogEntry[]>();
   /** PMIDs with an `advanceTaskAuto` run in flight (manual or autopilot). */
   private readonly activeAutoRuns = new Set<string>();
+  /** Abort controllers for user-visible one-click runs, keyed by PMID. */
+  private readonly autoRunControllers = new Map<string, AbortController>();
   /**
    * LLM PDF finder deps. When the caller supplies a concrete
    * `pdfUrlFinderDeps` we store it directly. Otherwise we keep the
@@ -471,11 +478,13 @@ export class PaperPipelineService {
       extSummary: null,
       title: null,
       abstractText: null,
+      doi: null,
       categoryIds: [],
       tagIds: [],
       pdfUrl: null,
       docUrl: null,
       fulltextMdPath: null,
+      fulltextSourceKind: null,
       prefetchedHtmlPath: null,
       openAccess: null,
       categorizePicked: false,
@@ -505,6 +514,7 @@ export class PaperPipelineService {
           // even when the cached XML is large.
           ctx.title = extractTitle(xml) || null;
           ctx.abstractText = extractAbstract(xml) || null;
+          ctx.doi = extractDoi(xml) || null;
           this.log(pmid, 'info', `parsed ${ctx.authors.length} author(s)`);
           const result = await this.client.submitParseResult(pmid, ctx.authors, signal);
           this.emitAdvance(pmid, currentStatus, result.toStatus, null);
@@ -515,6 +525,7 @@ export class PaperPipelineService {
           ctx.authors = parseAuthors(ctx.xml);
           ctx.title = extractTitle(ctx.xml) || null;
           ctx.abstractText = extractAbstract(ctx.xml) || null;
+          ctx.doi = extractDoi(ctx.xml) || null;
           // LLM-first: the pooled hidden session reads the full-text
           // Markdown (when the auto-advance pre-fetch or an earlier run
           // produced one) and the cached XML, then writes a structured
@@ -526,6 +537,7 @@ export class PaperPipelineService {
             authors: ctx.authors,
             xmlPath: getPaperPipelineXmlPath(pmid),
             fulltextMdPath: (await this.resolveFulltextMdPath(ctx)) ?? undefined,
+            fulltextSourceKind: ctx.fulltextSourceKind,
             deps: this.getPdfUrlFinderDeps(),
             agentId: ctx.pipelineAgentId,
             modelOverride: ctx.pipelineModelOverride || undefined,
@@ -551,6 +563,7 @@ export class PaperPipelineService {
                 authors: ctx.authors,
                 xmlPath: getPaperPipelineXmlPath(pmid),
                 fulltextMdPath: (await this.resolveFulltextMdPath(ctx)) ?? undefined,
+                fulltextSourceKind: ctx.fulltextSourceKind,
                 deps: this.getPdfUrlFinderDeps(),
                 modelOverride: ctx.pipelineModelOverride || undefined,
               });
@@ -652,6 +665,7 @@ export class PaperPipelineService {
           ctx.authors = parseAuthors(ctx.xml);
           ctx.title = extractTitle(ctx.xml) || null;
           ctx.abstractText = extractAbstract(ctx.xml) || null;
+          ctx.doi = extractDoi(ctx.xml) || null;
           // Phase 4 — manual paste workflow:
           //   1) Render a publication-ready Markdown to disk + upload to
           //      OSS so the user can copy/paste it into 微信编辑器.
@@ -675,11 +689,25 @@ export class PaperPipelineService {
               authors: ctx.authors,
               xmlPath: getPaperPipelineXmlPath(pmid),
               fulltextMdPath: (await this.resolveFulltextMdPath(ctx)) ?? undefined,
+              fulltextSourceKind: ctx.fulltextSourceKind,
               deps: this.getPdfUrlFinderDeps(),
               agentId: ctx.pipelineAgentId,
               modelOverride: ctx.pipelineModelOverride || undefined,
             });
             ctx.extSummary = extSummary;
+          }
+          // `pdf_ready` is a backend state, while the local PDF cache may
+          // have been removed after an app restart or an older run. A draft
+          // regeneration must reacquire a local PDF/HTML before starting
+          // the Markdown Agent; otherwise prepareWechatDraft falls back to
+          // the short template and only the subsequent Word Agent is visible.
+          if (!(await this.hasFulltextSource(pmid))) {
+            this.log(
+              pmid,
+              'info',
+              'wechat regeneration has no local PDF/HTML; reacquiring full-text source',
+            );
+            await this.acquireFulltext(pmid, ctx, { convert: false });
           }
           const draft = await prepareWechatDraft({
             pmid,
@@ -726,6 +754,10 @@ export class PaperPipelineService {
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'unknown error';
+      if (signal?.aborted || (err instanceof Error && err.name === 'AbortError')) {
+        this.log(pmid, 'warn', `advance cancelled at ${action}`);
+        throw err;
+      }
       const isStateConflict = isLitStateTransitionConflict(message);
       if (isStateConflict || isLitXmlUnavailableError(message)) {
         // Neither rejection is a processing failure, so neither may be
@@ -817,11 +849,31 @@ export class PaperPipelineService {
       );
     }
     this.activeAutoRuns.add(pmid);
+    const controller = new AbortController();
+    const forwardAbort = (): void => controller.abort();
+    if (signal?.aborted) controller.abort();
+    else signal?.addEventListener('abort', forwardAbort, { once: true });
+    this.autoRunControllers.set(pmid, controller);
     try {
-      return await this.runAutoAdvance(pmid, currentStatus, signal, options);
+      return await this.runAutoAdvance(pmid, currentStatus, controller.signal, options);
     } finally {
+      signal?.removeEventListener('abort', forwardAbort);
+      if (this.autoRunControllers.get(pmid) === controller) {
+        this.autoRunControllers.delete(pmid);
+      }
       this.activeAutoRuns.delete(pmid);
     }
+  }
+
+  /** Cancel a running one-click advance without changing the backend status. */
+  cancelTaskAuto(pmid: string): boolean {
+    const controller = this.autoRunControllers.get(pmid);
+    if (!controller) return false;
+    controller.abort();
+    const runtime = this.getPdfUrlFinderDeps().coworkRuntime;
+    if (runtime) stopTaskHiddenSession(pmid, runtime);
+    this.log(pmid, 'warn', 'auto-advance cancelled by user');
+    return true;
   }
 
   private async runAutoAdvance(
@@ -871,11 +923,13 @@ export class PaperPipelineService {
       extSummary: null,
       title: null,
       abstractText: null,
+      doi: null,
       categoryIds: [],
       tagIds: [],
-      pdfUrl: null,
+      pdfUrl: options?.pdfUrl ?? null,
       docUrl: null,
       fulltextMdPath: null,
+      fulltextSourceKind: null,
       prefetchedHtmlPath: null,
       openAccess: options?.openAccess ?? null,
       categorizePicked: false,
@@ -1041,8 +1095,11 @@ export class PaperPipelineService {
   ): Parameters<typeof downloadPdf>[0] {
     return {
       pmid,
+      preferredUrl: /^https?:\/\//i.test(ctx.pdfUrl ?? '') ? ctx.pdfUrl : null,
       title: ctx.title,
       abstractText: ctx.abstractText,
+      doi: ctx.doi,
+      authors: ctx.authors,
       findPdfUrl: async (args) => findPdfUrl({
         ...args,
         deps: this.getPdfUrlFinderDeps(),
@@ -1121,9 +1178,11 @@ export class PaperPipelineService {
     ctx.fulltextAcquired = true;
     try {
       // A previous run may already have converted the full text.
-      const cachedMd = await getExistingFulltextMdPath(pmid);
+      const cachedMd = await getExistingFulltextMdPath(pmid, ctx.title);
       if (cachedMd) {
         ctx.fulltextMdPath = cachedMd;
+        const cachedPdf = await fsp.access(getPaperPipelinePdfPath(pmid)).then(() => true, (): false => false);
+        ctx.fulltextSourceKind = cachedPdf ? 'pdf' : 'html';
         this.log(pmid, 'info', `acquire: reusing cached full-text markdown ${cachedMd}`);
         return;
       }
@@ -1185,6 +1244,7 @@ export class PaperPipelineService {
       );
       if (mdPath) {
         ctx.fulltextMdPath = mdPath;
+        ctx.fulltextSourceKind = sourceKind;
       } else {
         this.log(
           pmid,
@@ -1210,7 +1270,10 @@ export class PaperPipelineService {
               ctx.pipelineAgentId,
               ctx.pipelineModelOverride,
             );
-            if (mdPath) ctx.fulltextMdPath = mdPath;
+            if (mdPath) {
+              ctx.fulltextMdPath = mdPath;
+              ctx.fulltextSourceKind = 'html';
+            }
           }
           return;
         }
@@ -1305,6 +1368,7 @@ export class PaperPipelineService {
     ctx.authors = ctx.authors.length > 0 ? ctx.authors : parseAuthors(ctx.xml);
     ctx.title = ctx.title ?? (extractTitle(ctx.xml) || null);
     ctx.abstractText = ctx.abstractText ?? (extractAbstract(ctx.xml) || null);
+    ctx.doi = ctx.doi ?? (extractDoi(ctx.xml) || null);
   }
 
   /**

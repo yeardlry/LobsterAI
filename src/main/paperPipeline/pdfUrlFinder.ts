@@ -1,6 +1,7 @@
 import { net } from 'electron';
 
 import { DEFAULT_PDF_URL_SUGGEST_MODEL } from '../../shared/paperPipeline/constants';
+import type { PaperTaskAuthor } from '../../shared/paperPipeline/types';
 import type { CoworkStore } from '../coworkStore';
 import { type HiddenCoworkSessionDeps } from '../libs/agentEngine/hiddenCoworkSession';
 import type { CoworkRuntime } from '../libs/agentEngine/types';
@@ -10,11 +11,11 @@ import { runTaskHiddenSession } from './taskHiddenSession';
 /**
  * Phase 6 + 7 LLM-assisted PDF acquisition.
  *
- * When the deterministic EuropePMC / PMC chains fail, LobsterAI falls back
- * to the same LLM models the user already uses in chat:
+ * When the deterministic EuropePMC / PMC chains fail, LobsterAI can use
+ * the same LLM models the user already uses in chat:
  *
  * Strategy priority:
- *   1. {@link findPdfUrl} — direct chat completion against OpenClaw's
+ *   1. {@link findPdfUrl} — compatibility URL suggestion through OpenClaw's
  *      local token-proxy port. Lightweight (no agent orchestration) but
  *      tool-less: it can only suggest URLs, which `downloadPdf` then
  *      fetches itself. Returns every URL found in the reply so the
@@ -58,6 +59,8 @@ export async function findPdfUrl(input: {
   pmid: string;
   title?: string | null;
   abstractText?: string | null;
+  doi?: string | null;
+  authors?: PaperTaskAuthor[];
   deps: PdfUrlFinderDeps;
   /**
    * Provider-qualified model ref for the token-proxy completion (per-run
@@ -88,6 +91,8 @@ function buildPrompt(input: {
   pmid: string;
   title?: string | null;
   abstractText?: string | null;
+  doi?: string | null;
+  authors?: PaperTaskAuthor[];
 }): string {
   const title = input.title?.trim();
   const abstract = input.abstractText?.trim();
@@ -96,10 +101,14 @@ function buildPrompt(input: {
   ];
   if (title) parts.push(`标题：${title}`);
   if (abstract) parts.push(`摘要：${abstract}`);
+  if (input.doi?.trim()) parts.push(`DOI：${input.doi.trim()}`);
+  const authors = (input.authors ?? []).map(author => author.fullName.trim()).filter(Boolean);
+  if (authors.length > 0) parts.push(`作者：${authors.slice(0, 3).join('；')}`);
   parts.push(
-    '请返回一个有效的 PDF 直链（https:// 开头，单独一行）；' +
+    '请先自行判断候选地址是否真的对应目标论文，再返回有效的 PDF 直链（https:// 开头，单独一行）；' +
       '如有多个候选，按推荐顺序每行一个；' +
-      '如果没有任何可用的公开 PDF，请返回 NO_PDF。',
+      '不要把期刊落地页、HTML、登录页或搜索结果页当作 PDF 直链；' +
+      '如果没有任何可用的公开 PDF，请返回 NO_PDF。程序还会下载文件并核对 PDF 内容与标题、DOI、PMID、作者是否匹配。',
   );
   return parts.join('\n');
 }
@@ -162,6 +171,8 @@ export async function downloadPdfViaHiddenCoworkSession(input: {
   localPath: string;
   title?: string | null;
   abstractText?: string | null;
+  doi?: string | null;
+  authors?: PaperTaskAuthor[];
   deps: PdfUrlFinderDeps;
   /**
    * Override agent id for the hidden session. Falls back to the global
@@ -216,41 +227,47 @@ function buildDownloadPrompt(input: {
   localPath: string;
   title?: string | null;
   abstractText?: string | null;
+  doi?: string | null;
+  authors?: PaperTaskAuthor[];
 }): string {
   const title = input.title?.trim();
   const abstract = input.abstractText?.trim();
-  const parts: string[] = [
-    `请下载 PMID ${input.pmid} 这篇文献的开放获取（open access）PDF 全文，保存到这个绝对路径：`,
-    input.localPath,
-  ];
-  if (title) parts.push(`标题：${title}`);
-  if (abstract) parts.push(`摘要：${abstract}`);
-  parts.push(
-    '重要约束：全程禁止打开浏览器或任何图形界面工具（不要用 computer-use / playwright / 打开窗口）。' +
-      '只允许用 curl / wget 等 CLI 工具直接下载 PDF 直链（务必带浏览器 User-Agent，很多站点会拦截非浏览器请求）。',
-    '建议步骤：先用 eutils elink（https://eutils.ncbi.nlm.nih.gov/entrez/eutils/elink.fcgi?dbfrom=pubmed&db=pmc&id=<PMID>&retmode=json）解析 PMC ID，' +
-      '再从 pmc.ncbi.nlm.nih.gov / europepmc.org / 期刊官网 / biorxiv / unpaywall（https://api.unpaywall.org/v2/<DOI>?email=test@example.com）等来源找 PDF 直链。',
-    '第一个来源找不到可直链下载的 PDF 时不要放弃：按上述来源逐个尝试，直到找到能用 curl 直接下载成功的 PDF 直链为止；' +
-      '每个候选 URL 下载后都要验证文件头是 %PDF-（HTML 验证页/拦截页不算成功，换下一个来源）。',
-    '注意：',
-    `1. 动手前先检查目标路径 ${input.localPath} 是否已有合法 PDF（之前的尝试可能已下载），有就直接回复 DOWNLOADED；`,
-    '2. 下载到临时位置（如 /tmp）后必须把文件复制/移动到上面的目标绝对路径，不要留在临时目录；',
-    '3. 用 file 命令或文件头（%PDF-）确认下载的是 PDF 而不是 HTML 验证页。',
-    '下载完成后只回复一行 DOWNLOADED；所有来源都试过后仍无法公开下载时才回复一行 NO_PDF。不要改动或总结文件内容。',
-  );
-  return parts.join('\n');
+  return [
+    '你负责为指定 PMID 查找并下载对应的开放获取 PDF。',
+    '',
+    `目标 PMID：${input.pmid}（仅作标识，不要根据 PMID 猜测文章内容）`,
+    title ? `目标标题：${title}` : '',
+    abstract ? `目标摘要：${abstract}` : '',
+    input.doi?.trim() ? `目标 DOI：${input.doi.trim()}` : '',
+    (input.authors ?? []).length > 0
+      ? `目标作者：${input.authors?.slice(0, 3).map(author => author.fullName).join('；')}`
+      : '',
+    '',
+    `最终文件必须保存到：${input.localPath}`,
+    '',
+    '工作目标：',
+    '1. 你必须自己搜索来源、判断候选地址、下载文件，不要只返回 URL。',
+    '2. 优先使用 Europe PMC、PMC、Unpaywall、DOI 元数据和期刊提供的公开 PDF 直链。',
+    '3. 只能使用静态 HTTP/API 请求和 curl、wget 等 CLI 工具；禁止打开浏览器或任何图形界面。',
+    '4. “浏览器 User-Agent”只表示 curl/wget 的 HTTP 请求头，不表示打开浏览器。',
+    '5. 遇到登录页、验证码页、HTML 拦截页或需要人工操作的页面，放弃该来源并尝试下一个。',
+    '',
+    '候选文件验证：',
+    '1. HTTP 请求成功，且响应不是 HTML、登录页、验证码页或拦截页。',
+    '2. 文件头是 %PDF-，文件大小合理，并且文件可以被 PDF 工具读取。',
+    '3. 从 PDF 文本中尽量核对目标标题、PMID、DOI 或作者；无法确认属于目标论文时，不得保存为最终文件。',
+    '4. 不要因为 URL 名称包含 pdf、文章标题或 PMID 就认定它是正确文件。',
+    '',
+    '文件操作：',
+    '1. 先下载到临时文件，不要直接覆盖最终文件。',
+    '2. 验证通过后，再移动到指定的最终路径。',
+    '3. 下载完成后再次检查最终文件确实存在且是有效 PDF。',
+    '4. 最多尝试有限数量的公开来源；全部失败后返回 NO_PDF，不要猜测或伪造成功。',
+    '',
+    '成功后只回复一行 DOWNLOADED；所有来源都无法获得可验证的公开 PDF 时只回复一行 NO_PDF。',
+    '不要输出正文，不要修改其他文件。',
+  ].filter(Boolean).join('\n');
 }
-
-/**
- * Extract every distinct http(s) URL from a model reply, in order of
- * appearance. The prompt asks for a single URL, but models routinely
- * answer with prose containing several candidates — sometimes a dead
- * link first and the working one later — so the caller tries them in
- * order until one downloads. Chinese full-width punctuation (，。；：etc.)
- * and trailing sentence punctuation are treated as delimiters — the
- * regex would otherwise swallow the rest of the sentence. Capped so a
- * rambling reply cannot turn into dozens of download attempts.
- */
 const URL_PATTERN = /https?:\/\/[^\s"'<>，。；：！？、（）【】《》「」『』“”‘’]+/g;
 
 function extractHttpUrls(text: string): string[] {

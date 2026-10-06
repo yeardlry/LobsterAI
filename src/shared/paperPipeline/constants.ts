@@ -17,6 +17,8 @@ export const PaperPipelineIpcChannel = {
    * for step-by-step use.
    */
   AdvanceTaskAuto: 'paperPipeline:advanceTaskAuto',
+  /** Renderer → main: cancel a running one-click auto-advance. */
+  CancelTaskAuto: 'paperPipeline:cancelTaskAuto',
   ReportFailure: 'paperPipeline:reportFailure',
   ResetTask: 'paperPipeline:resetTask',
   GetTaskLog: 'paperPipeline:getTaskLog',

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useSelector } from 'react-redux';
 
+import { PaperPipelineProcessingStatus } from '../../../shared/paperPipeline/constants';
 import { i18nService } from '../../services/i18n';
 import { paperTasksService } from '../../services/paperTasks';
 import type { RootState } from '../../store';
@@ -32,6 +33,12 @@ const PaperTaskWechatDraftModal: React.FC = () => {
   const submitting = useSelector(
     (s: RootState) => s.paperTasks.submittingWechatPmid,
   );
+  const task = useSelector(
+    (s: RootState) =>
+      (activePmid ? s.paperTasks.tasks.find(item => item.pmid === activePmid) : undefined) ??
+      undefined,
+  );
+  const advancingPmid = useSelector((s: RootState) => s.paperTasks.advancingPmid);
 
   const [docUrl, setDocUrl] = useState('');
 
@@ -43,6 +50,7 @@ const PaperTaskWechatDraftModal: React.FC = () => {
   if (!activePmid || !draft) return null;
 
   const isSubmitting = submitting === activePmid;
+  const isRegenerating = advancingPmid === activePmid;
   const urlLooksValid = DOC_URL_PATTERN.test(docUrl.trim());
 
   const handleOpenLocal = async (): Promise<void> => {
@@ -69,6 +77,16 @@ const PaperTaskWechatDraftModal: React.FC = () => {
     await paperTasksService.submitWechatDoc(activePmid, trimmed, {
       markdownUrl: draft.publicUrl,
     });
+  };
+
+  const handleRegenerate = async (): Promise<void> => {
+    if (!task || isRegenerating || isSubmitting) return;
+    await paperTasksService.advanceTaskAuto(
+      activePmid,
+      PaperPipelineProcessingStatus.PdfReady,
+      task.openAccess ?? null,
+      task.pdfUrl ?? null,
+    );
   };
 
   const handleCancel = (): void => {
@@ -126,6 +144,18 @@ const PaperTaskWechatDraftModal: React.FC = () => {
               className="h-8 rounded-lg border border-border bg-surface px-3 text-xs font-medium text-secondary transition-colors hover:bg-surface-hover"
             >
               {i18nService.t('paperTasksWechatDraftOpenPublic')}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                void handleRegenerate();
+              }}
+              disabled={!task || isSubmitting || isRegenerating}
+              className="h-8 rounded-lg border border-primary/30 bg-primary/5 px-3 text-xs font-medium text-primary transition-colors hover:bg-primary/10 disabled:opacity-50"
+            >
+              {isRegenerating
+                ? i18nService.t('paperTasksWechatDraftRegenerating')
+                : i18nService.t('paperTasksWechatDraftRegenerate')}
             </button>
           </div>
 

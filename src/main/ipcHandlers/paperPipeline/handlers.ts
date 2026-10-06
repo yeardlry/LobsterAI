@@ -116,6 +116,8 @@ export function registerPaperPipelineHandlers(deps: PaperPipelineHandlerDeps): v
         currentStatus: PaperPipelineProcessingStatus;
         /** Contract v1.3 `openAccess` flag from the task list; optional. */
         openAccess?: boolean | null;
+        /** Full PDF URL from listPendingTasks; optional for older callers. */
+        pdfUrl?: string | null;
       },
     ): Promise<PaperPipelineHandlerEnvelope<PaperTaskAdvanceResult>> => {
       if (!deps.isLitAuthSession()) {
@@ -132,7 +134,10 @@ export function registerPaperPipelineHandlers(deps: PaperPipelineHandlerDeps): v
           payload.pmid,
           payload.currentStatus,
           undefined,
-          { openAccess: payload.openAccess ?? null },
+          {
+            openAccess: payload.openAccess ?? null,
+            pdfUrl: payload.pdfUrl ?? null,
+          },
         );
         return envelopeOk(result);
       } catch (err) {
@@ -143,6 +148,23 @@ export function registerPaperPipelineHandlers(deps: PaperPipelineHandlerDeps): v
         );
         return envelopeError(message);
       }
+    },
+  );
+
+  ipcMain.handle(
+    PaperPipelineIpcChannel.CancelTaskAuto,
+    async (
+      _event,
+      payload: { pmid: string },
+    ): Promise<PaperPipelineHandlerEnvelope<{ cancelled: boolean }>> => {
+      if (!isPaperPipelineServiceInitialized()) {
+        return envelopeError('Paper pipeline service not initialized');
+      }
+      if (!payload?.pmid) {
+        return envelopeError('cancelTaskAuto requires { pmid }');
+      }
+      const cancelled = getPaperPipelineService().cancelTaskAuto(payload.pmid);
+      return envelopeOk({ cancelled });
     },
   );
 

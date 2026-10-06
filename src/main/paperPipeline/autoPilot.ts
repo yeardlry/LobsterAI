@@ -57,6 +57,8 @@ export interface PaperAutoPilotDeps {
     currentStatus: PaperPipelineProcessingStatus,
     /** Contract v1.3 `openAccess` from the task list; null = unknown. */
     openAccess: boolean | null,
+    /** Full PDF URL from the task list, when available. */
+    pdfUrl?: string | null,
   ) => Promise<Pick<PaperTaskAdvanceResult, 'toStatus' | 'action'>>;
   /** Gate: the lit token must be live before any backend call is made. */
   isLitAuthSession: () => boolean;
@@ -254,6 +256,7 @@ async function runBatch(
           task.pmid,
           task.processingStatus,
           task.openAccess ?? null,
+          task.pdfUrl ?? null,
         );
         result.toStatus = advance.toStatus;
         result.awaitingDocUrl = advance.action === PaperPipelineAdvanceAction.GenerateWechatDoc;
@@ -361,8 +364,8 @@ export function buildPaperPipelineBridgeHandlers(deps: {
       const page = await deps.service.listPendingTasks({ page: 1, pageSize: 50 });
       return page.items;
     },
-    advanceTaskAuto: (pmid, currentStatus, openAccess) =>
-      deps.service.advanceTaskAuto(pmid, currentStatus, undefined, { openAccess }),
+    advanceTaskAuto: (pmid, currentStatus, openAccess, pdfUrl) =>
+      deps.service.advanceTaskAuto(pmid, currentStatus, undefined, { openAccess, pdfUrl }),
     isLitAuthSession: deps.isLitAuthSession,
   });
   return {

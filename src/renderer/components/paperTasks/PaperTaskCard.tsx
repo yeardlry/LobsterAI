@@ -47,7 +47,11 @@ const PaperTaskCard: React.FC<PaperTaskCardProps> = ({ task, busy, onSelect }) =
       task.pmid,
       task.processingStatus,
       task.openAccess ?? null,
+      task.pdfUrl ?? null,
     );
+  };
+  const handleCancel = async (): Promise<void> => {
+    await paperTasksService.cancelTaskAuto(task.pmid);
   };
   const handleReset = async (): Promise<void> => {
     await paperTasksService.resetTask(task.pmid);
@@ -148,10 +152,22 @@ const PaperTaskCard: React.FC<PaperTaskCardProps> = ({ task, busy, onSelect }) =
           </button>
         )}
         {showAdvanceButton && (
+          task.processingStatus === PaperPipelineProcessingStatus.PdfReady && !busy && (
+            <button
+              type="button"
+              disabled={!canAdvance}
+              onClick={handleAdvance}
+              className="h-8 rounded-lg border border-primary/30 bg-primary/5 px-3 text-xs font-medium text-primary transition-colors hover:bg-primary/10 disabled:opacity-50"
+            >
+              {i18nService.t('paperTasksRegenerateWechat')}
+            </button>
+          )
+        )}
+        {showAdvanceButton && (
           <button
             type="button"
-            disabled={!canAdvance}
-            onClick={handleAdvance}
+            disabled={busy ? false : !canAdvance}
+            onClick={busy ? handleCancel : handleAdvance}
             title={
               task.processingStatus === PaperPipelineProcessingStatus.PdfReady
                 ? i18nService.t('paperTasksAdvanceRedoHint')
@@ -159,7 +175,7 @@ const PaperTaskCard: React.FC<PaperTaskCardProps> = ({ task, busy, onSelect }) =
             }
             className="h-8 rounded-lg bg-primary px-3 text-xs font-medium text-on-primary transition-opacity hover:opacity-90 disabled:opacity-50"
           >
-            {busy ? i18nService.t('paperTasksAdvancing') : i18nService.t('paperTasksAdvanceAuto')}
+            {busy ? i18nService.t('paperTasksCancelAdvance') : i18nService.t('paperTasksAdvanceAuto')}
           </button>
         )}
       </div>

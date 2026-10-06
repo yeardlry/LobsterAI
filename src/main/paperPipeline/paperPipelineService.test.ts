@@ -105,6 +105,7 @@ const SAMPLE_XML = `<?xml version="1.0"?>
 </PubmedArticleSet>`;
 
 function buildService(overrides?: {
+  submitParseResult?: (...args: unknown[]) => Promise<unknown>;
   submitAnalysis?: () => Promise<unknown>;
   /**
    * Optional Cowork-store-like stub wired into the service constructor's
@@ -134,10 +135,10 @@ function buildService(overrides?: {
   const client = {
     getDeps: vi.fn(() => ({})),
     getXmlContent: vi.fn(async () => SAMPLE_XML),
-    submitParseResult: vi.fn(async () => ({
+    submitParseResult: vi.fn(overrides?.submitParseResult ?? (async () => ({
       pmid: PMID,
       toStatus: PaperPipelineProcessingStatus.Parsed,
-    })),
+    }))),
     submitAnalysis: vi.fn(overrides?.submitAnalysis ?? (async () => ({
       pmid: PMID,
       toStatus: PaperPipelineProcessingStatus.Analyzed,
@@ -225,7 +226,7 @@ describe('advanceTaskAuto', () => {
     expect(client.submitAnalysis).toHaveBeenCalledTimes(1);
     expect(client.submitCategories).toHaveBeenCalledTimes(1);
     // The pre-picked category/tag ids ride through to the submit.
-    expect(client.submitCategories).toHaveBeenCalledWith(PMID, ['293'], ['88'], undefined);
+    expect(client.submitCategories).toHaveBeenCalledWith(PMID, ['293'], ['88'], expect.any(AbortSignal));
     expect(downloadPdfMock).toHaveBeenCalledTimes(2);
     // User-required work order (2026-09-19): the category pick runs BEFORE
     // the download, and the download BEFORE the analysis is submitted.
@@ -249,7 +250,7 @@ describe('advanceTaskAuto', () => {
       PMID,
       'pdf',
       `pdf/${PMID}.pdf`,
-      undefined,
+      expect.any(AbortSignal),
     );
     // Stop node: the WeChat draft step (md + word export + word upload)
     // ran and the task stays at pdf_ready awaiting the user's docUrl.
@@ -269,7 +270,7 @@ describe('advanceTaskAuto', () => {
     expect(client.submitParseResult).not.toHaveBeenCalled();
     expect(client.submitAnalysis).not.toHaveBeenCalled();
     expect(client.submitCategories).toHaveBeenCalledTimes(1);
-    expect(client.submitCategories).toHaveBeenCalledWith(PMID, ['293'], ['88'], undefined);
+    expect(client.submitCategories).toHaveBeenCalledWith(PMID, ['293'], ['88'], expect.any(AbortSignal));
     // The category pre-pick ran BEFORE the download (user-required order).
     expect(pickCategoriesMock).toHaveBeenCalledTimes(1);
     expect(pickCategoriesMock.mock.invocationCallOrder[0]).toBeLessThan(
@@ -309,6 +310,22 @@ describe('advanceTaskAuto', () => {
     await expect(
       service.advanceTaskAuto(PMID, PaperPipelineProcessingStatus.Completed),
     ).rejects.toThrow(/Cannot auto-advance/);
+  });
+
+  test('cancels a running auto-advance without reporting the task as failed', async () => {
+    const submitParseResult = vi.fn((_pmid: unknown, _authors: unknown, signal: unknown) =>
+      new Promise<unknown>((_resolve, reject) => {
+        (signal as AbortSignal).addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+      }),
+    );
+    const { service, client } = buildService({ submitParseResult });
+    const run = service.advanceTaskAuto(PMID, PaperPipelineProcessingStatus.Fetched);
+    await vi.waitFor(() => expect(submitParseResult).toHaveBeenCalledTimes(1));
+
+    expect(service.cancelTaskAuto(PMID)).toBe(true);
+    await expect(run).rejects.toThrow('aborted');
+    expect(client.reportTaskFailure).not.toHaveBeenCalled();
+    expect(service.cancelTaskAuto(PMID)).toBe(false);
   });
 
   test('each intermediate step emits a status change push', async () => {
@@ -412,7 +429,7 @@ describe('advanceTaskAuto', () => {
     expect(pickCategoriesMock.mock.calls[1][0]).toEqual(expect.objectContaining({
       extSummary: '【标题】 heuristic extSummary',
     }));
-    expect(client.submitCategories).toHaveBeenCalledWith(PMID, ['7'], [], undefined);
+    expect(client.submitCategories).toHaveBeenCalledWith(PMID, ['7'], [], expect.any(AbortSignal));
   });
 
   test('re-picks at the Categorize step when the pre-pick returns empty lists', async () => {
@@ -434,7 +451,7 @@ describe('advanceTaskAuto', () => {
     expect(pickCategoriesMock.mock.calls[1][0]).toEqual(expect.objectContaining({
       extSummary: '【标题】 heuristic extSummary',
     }));
-    expect(client.submitCategories).toHaveBeenCalledWith(PMID, ['7'], ['8'], undefined);
+    expect(client.submitCategories).toHaveBeenCalledWith(PMID, ['7'], ['8'], expect.any(AbortSignal));
     expect(result.toStatus).toBe(PaperPipelineProcessingStatus.PdfReady);
   });
 
@@ -499,7 +516,7 @@ describe('advanceTaskAuto', () => {
       fileType: 'html',
       localPath: htmlPath,
     }));
-    expect(client.submitFile).toHaveBeenCalledWith(PMID, 'html', `html/${PMID}.html`, undefined);
+    expect(client.submitFile).toHaveBeenCalledWith(PMID, 'html', `html/${PMID}.html`, expect.any(AbortSignal));
     expect(client.reportTaskFailure).not.toHaveBeenCalled();
     expect(result.toStatus).toBe(PaperPipelineProcessingStatus.PdfReady);
   });
@@ -583,7 +600,7 @@ describe('advanceTaskAuto', () => {
       fileType: 'html',
       localPath: htmlPath,
     }));
-    expect(client.submitFile).toHaveBeenCalledWith(PMID, 'html', `html/${PMID}.html`, undefined);
+    expect(client.submitFile).toHaveBeenCalledWith(PMID, 'html', `html/${PMID}.html`, expect.any(AbortSignal));
     expect(client.reportTaskFailure).not.toHaveBeenCalled();
     expect(result.toStatus).toBe(PaperPipelineProcessingStatus.PdfReady);
   });
@@ -607,7 +624,7 @@ describe('advanceTaskAuto', () => {
 
     expect(downloadPdfMock).not.toHaveBeenCalled();
     expect(ensureClosedAccessLandingPageMock).toHaveBeenCalledWith(PMID);
-    expect(client.submitFile).toHaveBeenCalledWith(PMID, 'html', `html/${PMID}.html`, undefined);
+    expect(client.submitFile).toHaveBeenCalledWith(PMID, 'html', `html/${PMID}.html`, expect.any(AbortSignal));
     expect(result.toStatus).toBe(PaperPipelineProcessingStatus.PdfReady);
   });
 
@@ -669,7 +686,7 @@ describe('advanceTaskAuto closed-access HTML fallback', () => {
       fileType: 'html',
       localPath: HTML_PATH,
     }));
-    expect(client.submitFile).toHaveBeenCalledWith(PMID, 'html', `html/${PMID}.html`, undefined);
+    expect(client.submitFile).toHaveBeenCalledWith(PMID, 'html', `html/${PMID}.html`, expect.any(AbortSignal));
     // The task did NOT fail — the chain continued into the draft step and
     // stopped at the normal pdf_ready node awaiting the user's docUrl.
     expect(client.reportTaskFailure).not.toHaveBeenCalled();

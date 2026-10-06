@@ -89,9 +89,19 @@ describe('startPaperAutoPilotBatch', () => {
 
     expect(advanceMock).toHaveBeenCalledTimes(2);
     // The contract v1.3 openAccess flag rides along so the closed-access
-    // short-circuit works in batch mode too.
-    expect(advanceMock).toHaveBeenCalledWith('111', PaperPipelineProcessingStatus.XmlReady, true);
-    expect(advanceMock).toHaveBeenCalledWith('222', PaperPipelineProcessingStatus.Categorized, false);
+    // short-circuit works in batch mode too — passed as the 3rd argument.
+    expect(advanceMock).toHaveBeenCalledWith(
+      '111',
+      PaperPipelineProcessingStatus.XmlReady,
+      true,
+      null,
+    );
+    expect(advanceMock).toHaveBeenCalledWith(
+      '222',
+      PaperPipelineProcessingStatus.Categorized,
+      false,
+      null,
+    );
 
     const status = getPaperAutoPilotStatus();
     expect(status?.running).toBe(false);

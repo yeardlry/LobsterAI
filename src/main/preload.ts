@@ -164,8 +164,10 @@ contextBridge.exposeInMainWorld('electron', {
       ipcRenderer.invoke(PaperPipelineIpcChannel.ListPendingTasks, payload ?? {}),
     advanceTask: (pmid: string, currentStatus: string) =>
       ipcRenderer.invoke(PaperPipelineIpcChannel.AdvanceTask, { pmid, currentStatus }),
-    advanceTaskAuto: (pmid: string, currentStatus: string, openAccess?: boolean | null) =>
-      ipcRenderer.invoke(PaperPipelineIpcChannel.AdvanceTaskAuto, { pmid, currentStatus, openAccess }),
+    advanceTaskAuto: (pmid: string, currentStatus: string, openAccess?: boolean | null, pdfUrl?: string | null) =>
+      ipcRenderer.invoke(PaperPipelineIpcChannel.AdvanceTaskAuto, { pmid, currentStatus, openAccess, pdfUrl }),
+    cancelTaskAuto: (pmid: string) =>
+      ipcRenderer.invoke(PaperPipelineIpcChannel.CancelTaskAuto, { pmid }),
     reportFailure: (payload: {
       pmid: string;
       errorMessage: string;

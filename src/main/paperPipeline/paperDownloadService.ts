@@ -2,6 +2,8 @@ import * as fsp from 'node:fs/promises';
 
 import { net } from 'electron';
 
+import type { PaperTaskAuthor } from '../../shared/paperPipeline/types';
+import { type PdfIdentityTarget, verifyPdfIdentity } from './pdfIdentityVerifier';
 import { ensurePaperPipelineDirs, getPaperPipelineHtmlPath, getPaperPipelinePdfPath } from './storage';
 
 /**
@@ -20,14 +22,13 @@ import { ensurePaperPipelineDirs, getPaperPipelineHtmlPath, getPaperPipelinePdfP
  *   3. EuropePMC search API → resolve the best matching PDF URL
  *      Used when the deterministic URLs above 404 — we ask the API for
  *      `PMCID` / `fullTextUrlList` and pull the first `PDF` link.
- *   4. LLM-driven URL finder (Phase 6 — `pdfUrlFinder.ts`)
- *      When the deterministic chains fail the orchestrator delegates to
- *      the LLM (via OpenClaw token-proxy → DeepSeek etc.) to suggest a
- *      PDF URL. The actual download still happens here so the same
- *      caching and size guards apply. This is the same capability the
- *      user exercised manually in chat (see paper-pipeline screen-shots:
- *      DeepSeek returned `s41467-025-68103-7.pdf` for the user request).
- *   5. Hidden-session agent download (Phase 7 — CLI-only, no browser)
+ *   4. Hidden-session agent download (Phase 7): the agent searches, judges,
+ *      and downloads the PDF itself to a temporary path; the main process
+ *      validates it before promoting it to the cache.
+ *   5. LLM-driven URL finder (Phase 6 — compatibility fallback): if the
+ *      self-downloading agent is unavailable or unsuccessful, the tool-less
+ *      LLM suggests candidate URLs and this module downloads and validates
+ *      them.
  *   6. Closed-access HTML fallback: when every strategy fails, save the
  *      public landing page (PubMed abstract / Europe PMC) to
  *      `html/<pmid>.html` and note the saved path in the error.
@@ -52,39 +53,40 @@ const USER_AGENT =
 
 export async function downloadPdf(input: {
   pmid: string;
+  /** Existing full URL returned by listPendingTasks, preferred on regeneration. */
+  preferredUrl?: string | null;
   /**
-   * Optional Phase 6 LLM URL finder. When provided AND the deterministic
-   * chains fail, the orchestrator will call this callback once and then
-   * try every returned URL through `downloadFromUrl` (in order) until one
-   * downloads, so the same size + cache guards apply. Models often return
-   * several candidates — dead link first, working one later — hence the
-   * list. The orchestrator is responsible for closing over the real
-   * `PdfUrlFinderDeps` — this module only sees the inputs it needs to
-   * forward to the model.
+   * Optional Phase 6 LLM URL finder kept as a compatibility fallback after
+   * the self-downloading agent. When provided, the orchestrator calls it
+   * once and tries every returned URL through `downloadFromUrl`.
    */
   findPdfUrl?: (args: {
     pmid: string;
     title?: string | null;
     abstractText?: string | null;
+    doi?: string | null;
+    authors?: PaperTaskAuthor[];
   }) => Promise<string[]>;
   /**
-   * Optional Phase 7 agent download. When provided AND the URL strategies
-   * fail, the orchestrator asks a hidden Cowork session to download the
-   * PDF itself (CLI tools only — the prompt forbids browsers; the agent
-   * walks OA sources until a URL answers a direct curl download) straight
-   * to `localPath`. Returns true when the agent claims it saved the file;
-   * the downloaded file is independently verified (size + PDF magic
-   * bytes) before being accepted.
+   * Optional Phase 7 agent download. When provided and the deterministic
+   * chains fail, the orchestrator asks a hidden Cowork session to search,
+   * judge, and download the PDF itself. The agent writes to a temporary
+   * path supplied by the caller; the downloaded file is independently
+   * verified (size + PDF magic bytes) before being accepted.
    */
   downloadViaAgent?: (args: {
     pmid: string;
     localPath: string;
     title?: string | null;
     abstractText?: string | null;
+    doi?: string | null;
+    authors?: PaperTaskAuthor[];
   }) => Promise<boolean>;
   /** Extra context to feed the LLM finder. */
   title?: string | null;
   abstractText?: string | null;
+  doi?: string | null;
+  authors?: PaperTaskAuthor[];
 }): Promise<{
   localPath: string;
   bytes: number;
@@ -97,7 +99,9 @@ export async function downloadPdf(input: {
   try {
     const stat = await fsp.stat(localPath);
     if (stat.size > 1024) {
-      return { localPath, bytes: stat.size };
+      const cached = await verifyPdfIdentity({ ...input, path: localPath });
+      if (cached?.matched) return { localPath, bytes: cached.bytes };
+      await fsp.rm(localPath, { force: true });
     }
   } catch {
     /* fresh download path */
@@ -117,11 +121,22 @@ export async function downloadPdf(input: {
   ];
 
   let lastError: unknown = null;
+  if (input.preferredUrl) {
+    try {
+      return await downloadFromUrl({
+        url: input.preferredUrl,
+        localPath,
+        identity: input,
+      });
+    } catch (err) {
+      lastError = err;
+    }
+  }
   for (const attempt of attempts) {
     try {
       const result = await attempt.run();
       if (result !== null) {
-        return await downloadFromUrl({ url: result.url, localPath });
+        return await downloadFromUrl({ url: result.url, localPath, identity: input });
       }
     } catch (err) {
       lastError = err;
@@ -129,79 +144,74 @@ export async function downloadPdf(input: {
     }
   }
 
-  // Strategy 4 (Phase 6): ask the LLM for PDF URLs and try each in
-  // order. The orchestrator wraps `findPdfUrl` so the real deps
-  // (token-proxy port) are passed in from the caller. Replies often
-  // contain several candidates (dead link first, working one later) —
-  // keep going until one downloads.
+  // Strategy 4 (Phase 7): let a hidden Cowork session search, judge, and
+  // download the PDF itself. The agent writes to a temporary path first;
+  // only a PDF that passes the independent verifier is promoted to the
+  // final cache path.
+  if (input.downloadViaAgent) {
+    const agentPath = `${localPath}.agent.part`;
+    await fsp.rm(agentPath, { force: true }).catch((): undefined => undefined);
+    try {
+      const agentClaimed = await input.downloadViaAgent({
+        pmid,
+        localPath: agentPath,
+        title: input.title ?? undefined,
+        abstractText: input.abstractText ?? undefined,
+        doi: input.doi ?? undefined,
+        authors: input.authors,
+      });
+      const bytes = await verifyDownloadedPdf(agentPath, input);
+      if (bytes !== null) {
+        await fsp.rm(localPath, { force: true });
+        await fsp.rename(agentPath, localPath);
+        return { localPath, bytes };
+      }
+      if (agentClaimed) {
+        lastError = new PaperPdfDownloadError(
+          'agent claimed DOWNLOADED but the file at the target path is not a valid PDF (temporary file verification failed)',
+        );
+      }
+    } catch (err) {
+      lastError = err;
+      // A timeout can occur just after the agent wrote the file. Verify the
+      // temporary path before discarding the attempt.
+      const bytes = await verifyDownloadedPdf(agentPath, input);
+      if (bytes !== null) {
+        await fsp.rm(localPath, { force: true });
+        await fsp.rename(agentPath, localPath);
+        return { localPath, bytes };
+      }
+    } finally {
+      await fsp.rm(agentPath, { force: true }).catch((): undefined => undefined);
+    }
+  }
+
+  // Compatibility fallback (Phase 6): if the self-downloading agent is
+  // unavailable or unsuccessful, ask the tool-less LLM for candidate URLs.
+  // The program still downloads and validates every candidate itself.
   if (input.findPdfUrl) {
     try {
       const llmUrls = await input.findPdfUrl({
         pmid,
         title: input.title ?? undefined,
         abstractText: input.abstractText ?? undefined,
+        doi: input.doi ?? undefined,
+        authors: input.authors,
       });
       if (llmUrls.length === 0) {
-        // The finder swallows per-strategy errors into its own logs
-        // (token-proxy 401, ...). Without this the final error would
-        // read "last error: unknown", which tells the user nothing.
-        // Detailed reasons are in the [PdfUrlFinder] log lines.
         lastError = new PaperPdfDownloadError(
           'LLM PDF finder returned no usable URL (see [PdfUrlFinder] logs for per-strategy reasons)',
         );
       }
       for (const llmUrl of llmUrls) {
         try {
-          return await downloadFromUrl({ url: llmUrl, localPath });
+          return await downloadFromUrl({ url: llmUrl, localPath, identity: input });
         } catch (err) {
           lastError = err;
         }
       }
     } catch (err) {
       lastError = err;
-    }
-  }
-
-  // Strategy 5 (Phase 7): let a hidden Cowork session agent download the
-  // PDF itself. The prompt restricts the agent to CLI tools (curl / wget
-  // with a browser User-Agent, NO browser/GUI) and tells it to keep
-  // walking OA sources until one answers a direct download. The agent's
-  // DOWNLOADED claim is not trusted — but we also do not REQUIRE it: the
-  // agent often does the work and answers in prose without the literal
-  // token, so the file at the target path is verified either way (size +
-  // PDF magic) before winning.
-  if (input.downloadViaAgent) {
-    try {
-      const agentClaimed = await input.downloadViaAgent({
-        pmid,
-        localPath,
-        title: input.title ?? undefined,
-        abstractText: input.abstractText ?? undefined,
-      });
-      const bytes = await verifyDownloadedPdf(localPath);
-      if (bytes !== null) {
-        return { localPath, bytes };
-      }
-      if (agentClaimed) {
-        lastError = new PaperPdfDownloadError(
-          'agent claimed DOWNLOADED but the file at the target path is not a valid PDF',
-        );
-      }
-    } catch (err) {
-      lastError = err;
-      // The turn timer can fire while the agent is between the actual
-      // download and its final one-line report — the file still lands at
-      // the target path. Verify before declaring the strategy dead
-      // (observed 2026-09-18: a 240s timeout killed a run that had just
-      // finished working; the file check never ran in the catch path).
-      try {
-        const bytes = await verifyDownloadedPdf(localPath);
-        if (bytes !== null) {
-          return { localPath, bytes };
-        }
-      } catch {
-        /* fall through to the exhausted error */
-      }
     }
   }
 
@@ -289,7 +299,11 @@ async function saveClosedAccessHtmlFallback(pmid: string): Promise<string | null
  * "PDF". Rejecting non-PDF bodies makes those URLs count as failures so
  * the caller moves on to the next candidate.
  */
-async function downloadFromUrl(input: { url: string; localPath: string }): Promise<{
+async function downloadFromUrl(input: {
+  url: string;
+  localPath: string;
+  identity: PdfIdentityTarget;
+}): Promise<{
   localPath: string;
   bytes: number;
 }> {
@@ -306,6 +320,13 @@ async function downloadFromUrl(input: { url: string; localPath: string }): Promi
       `download from ${input.url} produced ${stat.size} bytes (< 1KB)`,
     );
   }
+  const identity = await verifyPdfIdentity({ ...input.identity, path: input.localPath });
+  if (!identity?.matched) {
+    await fsp.rm(input.localPath, { force: true });
+    throw new PaperPdfDownloadError(
+      `download from ${input.url} failed PDF identity verification: ${identity?.reason ?? 'invalid PDF'}`,
+    );
+  }
   return { localPath: input.localPath, bytes: stat.size };
 }
 
@@ -320,19 +341,13 @@ function isPdfBuffer(body: Buffer): boolean {
  * null otherwise. Used to check files the hidden-session agent claims to
  * have downloaded — the claim alone is not evidence.
  */
-async function verifyDownloadedPdf(localPath: string): Promise<number | null> {
+async function verifyDownloadedPdf(
+  localPath: string,
+  identity: PdfIdentityTarget,
+): Promise<number | null> {
   try {
-    const stat = await fsp.stat(localPath);
-    if (stat.size <= 1024) return null;
-    const handle = await fsp.open(localPath, 'r');
-    try {
-      const head = Buffer.alloc(5);
-      await handle.read(head, 0, 5, 0);
-      if (!isPdfBuffer(head)) return null;
-    } finally {
-      await handle.close();
-    }
-    return stat.size;
+    const result = await verifyPdfIdentity({ ...identity, path: localPath });
+    return result?.matched ? result.bytes : null;
   } catch {
     return null;
   }

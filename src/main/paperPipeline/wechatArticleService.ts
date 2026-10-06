@@ -1,11 +1,12 @@
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { LitArchiveFileType } from '../../shared/paperPipeline/constants';
 import type { PaperTaskAuthor } from '../../shared/paperPipeline/types';
 import type { CoworkStore } from '../coworkStore';
 import type { CoworkRuntime } from '../libs/agentEngine/types';
-import { uploadFile } from './paperFileUpload';
+import { uploadFile, uploadImageFile } from './paperFileUpload';
 import type { PaperPipelineClientDeps } from './paperPipelineClient';
 import { PaperPipelineClient } from './paperPipelineClient';
 import {
@@ -15,7 +16,7 @@ import {
   getPaperPipelinePdfPath,
   getPaperPipelineXmlPath,
 } from './storage';
-import { runTaskHiddenSession } from './taskHiddenSession';
+import { clearTaskHiddenSession, runTaskHiddenSession, stopTaskHiddenSession } from './taskHiddenSession';
 import { extractDraftMeta } from './wechatDraftMeta';
 import { buildGenerationPrompt } from './wechatGenerationPrompt';
 
@@ -122,6 +123,9 @@ export async function prepareWechatDraft(input: {
     renderedSummary = meta.summary ?? templateSummary;
   } else {
     // Fallback: deterministic template (original Phase 4 stub body).
+    console.warn(
+      `[WechatDraft] Markdown Agent did not produce a draft for PMID ${input.pmid}; using template fallback`,
+    );
     const markdown = renderMarkdown({
       pmid: input.pmid,
       title: templateTitle,
@@ -135,7 +139,17 @@ export async function prepareWechatDraft(input: {
     await fs.writeFile(localPath, markdown, 'utf8');
   }
 
-  const publicUrl = await tryUploadDraft(input.pmid, localPath, input.clientDeps);
+  const publishedMarkdown = await createPublishedMarkdown(
+    input.pmid,
+    localPath,
+    input.clientDeps,
+  );
+  const publicUrl = await tryUploadDraft(
+    input.pmid,
+    publishedMarkdown.sourcePath,
+    input.clientDeps,
+    publishedMarkdown.content,
+  );
 
   // Word export (best-effort): hidden session converts the finished
   // Markdown, then we archive it at word/{pmid}.docx and record word_url.
@@ -158,26 +172,41 @@ export async function prepareWechatDraft(input: {
 }
 
 /**
- * Upload the finished draft as `md/{pmid}.md` and return the public OSS
- * URL. Best-effort: on any failure we log and return null so the caller
- * degrades to the local `file://` path instead of breaking the step.
+ * Upload the finished draft as `md/{pmid}.md`, register the archive key via
+ * `submitFile(fileType=md)`, and return the public OSS URL. Best-effort: on
+ * any failure we log and return null so the caller degrades to the local
+ * `file://` path instead of breaking the step.
  */
 async function tryUploadDraft(
   pmid: string,
   localPath: string,
   clientDeps: PaperPipelineClientDeps | undefined,
+  markdownContent: string,
 ): Promise<string | null> {
   if (!clientDeps) return null;
   try {
-    const { size } = await fs.stat(localPath);
+    const hasLocalImageReference = /!\[[^\]]*\]\(\s*(?!https?:|data:|#)[^\s)>]+|<img\b[^>]*\bsrc\s*=\s*["'](?!https?:|data:|#)[^"']+["']/i.test(markdownContent);
+    if (hasLocalImageReference) {
+      throw new Error('refusing to upload Markdown that still contains a local image reference');
+    }
     const uploaded = await uploadFile({
       pmid,
       fileType: LitArchiveFileType.Md,
       localPath,
-      bytes: size,
+      bytes: Buffer.byteLength(markdownContent, 'utf8'),
+      content: markdownContent,
+      fileName: path.basename(localPath),
       clientDeps,
     });
-    console.log(`[WechatDraft] markdown uploaded to ${uploaded.url} (public: ${uploaded.publicUrl ?? 'n/a'})`);
+    // `uploaded.url` is the archive key (`md/{pmid}.md`) required by the
+    // backend submit endpoint. Never pass `publicUrl` here: it is only for
+    // human-facing links and is rejected by the archive-key contract.
+    await new PaperPipelineClient(clientDeps).submitFile(
+      pmid,
+      LitArchiveFileType.Md,
+      uploaded.url,
+    );
+    console.log(`[WechatDraft] publish Markdown uploaded from in-memory rewritten content to ${uploaded.url} (public: ${uploaded.publicUrl ?? 'n/a'})`);
     return uploaded.publicUrl ?? null;
   } catch (err) {
     console.warn(
@@ -185,6 +214,86 @@ async function tryUploadDraft(
     );
     return null;
   }
+}
+
+/**
+ * Create the publish copy of Markdown. Local Markdown keeps relative paths so
+ * Word conversion can embed the files; the uploaded copy must point at the
+ * public Qiniu URLs instead of the user's local filesystem.
+ */
+async function createPublishedMarkdown(
+  pmid: string,
+  localPath: string,
+  clientDeps: PaperPipelineClientDeps | undefined,
+): Promise<{ sourcePath: string; content: string }> {
+  const markdown = await fs.readFile(localPath, 'utf8');
+  if (!clientDeps) return { sourcePath: localPath, content: markdown };
+
+  // Accept normal Markdown (including an optional title) and simple HTML
+  // images. The Agent is instructed to use the assets directory, but older
+  // runs may have written figures beside the Markdown file instead.
+  const imagePattern = /!\[([^\]]*)\]\(\s*<?([^\s)>]+)>?(?:\s+["'][^"']*["'])?\s*\)|<img\b[^>]*\bsrc\s*=\s*["']([^"']+)["'][^>]*>/gi;
+  const artifactRoot = path.resolve(path.dirname(localPath));
+  const resolvedUrls = new Map<string, Promise<string | null>>();
+  const replacements: Array<{ whole: string; replacement: string }> = [];
+  let discoveredImages = 0;
+  let uploadedImages = 0;
+
+  for (const match of markdown.matchAll(imagePattern)) {
+    const whole = match[0];
+    const alt = match[1] || '图片';
+    const reference = match[2] || match[3] || '';
+    if (/^(?:https?:|data:|#)/i.test(reference)) continue;
+
+    discoveredImages += 1;
+    let decodedReference = reference;
+    try {
+      decodedReference = reference.startsWith('file:')
+        ? fileURLToPath(reference)
+        : decodeURIComponent(reference);
+    } catch {
+      // Keep the original path; uploadImageFile will report a useful failure.
+    }
+    const resolved = path.resolve(path.dirname(localPath), decodedReference);
+    const isInsideArtifact = resolved.startsWith(`${artifactRoot}${path.sep}`)
+      && resolved !== path.resolve(localPath);
+    if (!isInsideArtifact) {
+      replacements.push({ whole, replacement: `*${alt}（图片路径不在文章工作目录，未上传）*` });
+      continue;
+    }
+
+    let publicUrlPromise = resolvedUrls.get(resolved);
+    if (!publicUrlPromise) {
+      publicUrlPromise = uploadImageFile({ pmid, localPath: resolved, clientDeps })
+        .then(uploaded => uploaded.publicUrl)
+        .catch((err): string | null => {
+          console.warn(
+            `[WechatDraft] image upload failed for PMID ${pmid}, ${reference}: ${err instanceof Error ? err.message : 'unknown'}`,
+          );
+          return null;
+        });
+      resolvedUrls.set(resolved, publicUrlPromise);
+    }
+    const publicUrl = await publicUrlPromise;
+    if (publicUrl) uploadedImages += 1;
+    replacements.push({
+      whole,
+      replacement: publicUrl ? `![${alt}](${publicUrl})` : `*${alt}（图片上传失败）*`,
+    });
+  }
+
+  if (discoveredImages > 0) {
+    console.log(
+      `[WechatDraft] image processing for PMID ${pmid}: discovered ${discoveredImages}, uploaded ${uploadedImages}; local paths are replaced before Markdown upload`,
+    );
+  }
+  if (replacements.length === 0) return { sourcePath: localPath, content: markdown };
+  let published = markdown;
+  for (const { whole, replacement } of replacements) {
+    published = published.replace(whole, replacement);
+  }
+  console.log(`[WechatDraft] in-memory publish Markdown prepared from ${localPath}; local image references rewritten: ${replacements.length}`);
+  return { sourcePath: localPath, content: published };
 }
 
 /**
@@ -260,15 +369,15 @@ async function tryExportWordDocx(
 
 function buildWordExportPrompt(pmid: string, mdPath: string, docxPath: string): string {
   return [
-    '请把这个 Markdown 文件转换成 Word（.docx）文档：',
+    '请只把这个 Markdown 文件转换成 Word（.docx）文档，不要修改文章事实内容：',
     `- 源文件（UTF-8）：${mdPath}`,
     `- 输出路径（覆盖已有文件）：${docxPath}`,
     '',
     '要求：',
-    '1. 保留标题层级、加粗、列表、引用、表格等格式；',
-    `2. Markdown 中以相对路径引用的本地图片（如有，位于源文件同目录的 wechat-${pmid}-assets/ 等子目录）必须嵌入到 Word 文档里，不要丢图；`,
-    '3. 用本机可用的工具完成转换（pandoc、python-docx 等；必要时可先安装），最终必须产出合法的 .docx 文件；',
-    '4. 完成后只回复一行 DONE；失败回复一行 FAILED: 原因。',
+    '1. 保留标题层级、加粗、列表、引用、表格等格式；不得总结、润色、翻译、删减或重新组织 Markdown 文字、数字和结论；',
+    `2. Markdown 中以相对路径引用的本地图片（如有，位于源文件同目录的 wechat-${pmid}-assets/ 等子目录）必须检查文件是否存在并尽可能嵌入 Word；图片不存在时保留文字说明，并在失败原因中报告；不要使用外部图片或自行生成图片；`,
+    '3. 只能使用当前环境已经存在的工具（pandoc、python-docx 等）完成转换，不要安装依赖或修改系统环境；',
+    '4. 完成后检查 docx 存在、可解析、正文非空、标题层级基本保留，并尽可能确认本地图片已嵌入；检查通过后只回复一行 DONE，失败回复一行 FAILED: 原因。',
   ].join('\n');
 }
 
@@ -346,8 +455,20 @@ async function tryGenerateWithAgent(
     return false;
   }
 
+  // Regeneration must start with a clean hidden conversation. Otherwise a
+  // pooled PMID session may still be sitting at the previous Word-export
+  // prompt and answer the new run by converting Word again without rewriting
+  // the Markdown/images first.
+  if (coworkRuntime) stopTaskHiddenSession(input.pmid, coworkRuntime);
+  else clearTaskHiddenSession(input.pmid);
+  logSink('info', `[WechatDraft] starting Markdown regeneration for PMID ${input.pmid}`);
+
   const assetsDirName = `wechat-${input.pmid}-assets`;
   const assetsDir = path.join(path.dirname(localPath), assetsDirName);
+  // A regeneration must not reuse figures from a previous run. The paths are
+  // derived from the current PMID and are limited to the pipeline artifact dir.
+  await fs.rm(localPath, { force: true });
+  await fs.rm(assetsDir, { recursive: true, force: true });
   await fs.mkdir(assetsDir, { recursive: true });
 
   try {

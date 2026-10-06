@@ -34,11 +34,22 @@ const MIN_FULLTEXT_MD_CHARS = 300;
  * Return the cached full-text Markdown path when a plausible conversion
  * already exists on disk, else null.
  */
-export async function getExistingFulltextMdPath(pmid: string): Promise<string | null> {
+export async function getExistingFulltextMdPath(
+  pmid: string,
+  title?: string | null,
+): Promise<string | null> {
   const mdPath = getPaperPipelineFulltextMdPath(pmid);
   const text = await fs.readFile(mdPath, 'utf-8').catch((): null => null);
-  if (text !== null && text.trim().length >= MIN_FULLTEXT_MD_CHARS) return mdPath;
-  return null;
+  if (text === null || text.trim().length < MIN_FULLTEXT_MD_CHARS) return null;
+  if (/^(FAILED|ERROR)\s*:/im.test(text.trim())) return null;
+  const normalizedTitle = title?.toLowerCase().replace(/\s+/g, ' ').trim();
+  if (normalizedTitle) {
+    const normalizedText = text.toLowerCase().replace(/\s+/g, ' ');
+    const titleTokens = normalizedTitle.split(/[^\p{L}\p{N}]+/u).filter(token => token.length >= 3);
+    const matches = titleTokens.filter(token => normalizedText.includes(token)).length;
+    if (titleTokens.length > 0 && matches / titleTokens.length < 0.5) return null;
+  }
+  return mdPath;
 }
 
 export async function convertFulltextToMarkdown(input: {
@@ -76,7 +87,7 @@ export async function convertFulltextToMarkdown(input: {
     // download learned this the hard way) — check the disk once before
     // giving up. Never throws: even the re-check must not break the
     // caller's run.
-    return getExistingFulltextMdPath(input.pmid).catch((): null => null);
+    return getExistingFulltextMdPath(input.pmid, input.title).catch((): null => null);
   }
 }
 
@@ -99,7 +110,7 @@ async function tryConvert(input: {
 
   // A previous conversion may already exist — reuse it without a session
   // turn (re-running a step after a later-step failure is common).
-  const cached = await getExistingFulltextMdPath(input.pmid);
+  const cached = await getExistingFulltextMdPath(input.pmid, input.title);
   if (cached) return cached;
 
   const hasSource = await fs.access(input.sourcePath).then(() => true, (): false => false);

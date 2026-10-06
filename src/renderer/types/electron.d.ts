@@ -715,9 +715,16 @@ interface IElectronAPI {
       currentStatus: PaperPipelineProcessingStatus,
       /** Contract v1.3 `openAccess` flag; false = closed access. */
       openAccess?: boolean | null,
+      /** Full PDF URL returned by listPendingTasks. */
+      pdfUrl?: string | null,
     ) => Promise<{
       success: boolean;
       data?: PaperTaskAdvanceResult;
+      error?: string;
+    }>;
+    cancelTaskAuto: (pmid: string) => Promise<{
+      success: boolean;
+      data?: { cancelled: boolean };
       error?: string;
     }>;
     reportFailure: (payload: {

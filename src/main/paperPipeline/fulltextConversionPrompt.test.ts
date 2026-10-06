@@ -42,7 +42,8 @@ describe('buildFulltextConversionPrompt', () => {
     expect(prompt).toContain(
       '1. 源文件（本地 HTML 页面，可能是文献公开落地页，正文不全）：/tmp/paperPipeline/html/38342193.html',
     );
-    expect(prompt).toContain('如实转换已有内容（摘要、题录），不要编造缺失的正文');
+    expect(prompt).toContain('HTML 页面只能转换页面中实际存在的标题、摘要、作者和元数据');
+    expect(prompt).toContain('不得把缺失的方法、结果、表格或图表补成正文');
     expect(prompt).not.toContain('本地 PDF 全文');
   });
 
@@ -53,9 +54,9 @@ describe('buildFulltextConversionPrompt', () => {
         sourcePath: `/tmp/paperPipeline/${sourceKind}/38342193.${sourceKind}`,
         sourceKind,
       });
-      expect(prompt).toContain('只允许用 CLI 工具完成转换');
+      expect(prompt).toContain('只允许使用当前环境已经存在的 CLI 工具');
       expect(prompt).toContain('禁止打开浏览器或任何图形界面工具');
-      expect(prompt).toContain('不要总结、缩写、翻译或改写');
+      expect(prompt).toContain('不要总结、缩写、翻译、润色、改写');
       expect(prompt).toContain('完成后只回复一行 DONE');
       expect(prompt).toContain('FAILED: 原因');
       expect(prompt).toContain('不要把正文直接回复在对话里');

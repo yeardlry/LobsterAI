@@ -93,6 +93,19 @@ export function clearTaskHiddenSession(pmid: string): void {
   taskSessionIds.delete(pmid);
 }
 
+/** Stop the active pooled session for a task, if one exists. */
+export function stopTaskHiddenSession(pmid: string, runtime: CoworkRuntime): boolean {
+  const sessionId = taskSessionIds.get(pmid);
+  if (!sessionId) return false;
+  taskSessionIds.delete(pmid);
+  try {
+    runtime.stopSession(sessionId);
+  } catch {
+    // The runner's finally block also performs best-effort cleanup.
+  }
+  return true;
+}
+
 /**
  * Pipeline-wide expert agent aliases. Matched case-insensitively against an
  * Agent's `name`. Keep this list short — only products the user has

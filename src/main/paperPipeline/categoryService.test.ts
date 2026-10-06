@@ -134,7 +134,7 @@ describe('parseCategoryReply', () => {
     expect(parsed?.newTags).toEqual(['脂质纳米颗粒']);
   });
 
-  test('caps new entries at 2 categories / 3 tags and strips wrapping quotes', () => {
+  test('keeps all valid new entries and strips wrapping quotes', () => {
     const parsed = parseCategoryReply(
       'CATEGORIES: 1\nTAGS: 10\nNEW_CATEGORIES: 1:a, 2:b, 1:c\nNEW_TAGS: "t1", t2, t3, t4',
       catalogue,
@@ -142,8 +142,9 @@ describe('parseCategoryReply', () => {
     expect(parsed?.newCategories).toEqual([
       { parentCategoryId: '1', name: 'a' },
       { parentCategoryId: '2', name: 'b' },
+      { parentCategoryId: '1', name: 'c' },
     ]);
-    expect(parsed?.newTags).toEqual(['t1', 't2', 't3']);
+    expect(parsed?.newTags).toEqual(['t1', 't2', 't3', 't4']);
   });
 
   test('returns null when the protocol lines are missing', () => {
@@ -216,9 +217,9 @@ describe('categoryService', () => {
     expect(input.prompt).toContain('NEW_CATEGORIES');
     expect(input.prompt).toContain('NEW_TAGS');
     expect(input.prompt).toContain('1: 疫苗递送');
-    // New-entry names are steered to concise Chinese — long English phrases
-    // pollute the shared tag pool (user guidance 2026-09-21).
-    expect(input.prompt).toContain('名称用简洁的中文');
+    // New category names prefer concise Chinese while tags may use standard
+    // English terms or abbreviations.
+    expect(input.prompt).toContain('分类名称优先使用简洁、规范的中文');
     expect(input.agentId).toBe('main');
   });
 

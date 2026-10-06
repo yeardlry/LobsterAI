@@ -35,7 +35,7 @@ describe('buildGenerationPrompt source priority', () => {
     expect(prompt).toContain('2. 全文 XML（PDF/HTML 均不可用时使用）：/tmp/paperPipeline/xml/38342193.xml');
     expect(prompt).not.toContain('本地 HTML 页面');
     // Figures are available: keep the extraction requirement.
-    expect(prompt).toContain('从 PDF 中挑选 2-4 张');
+    expect(prompt).toContain('只从目标 PDF 中挑选 2-4 张实际存在');
   });
 
   test('html + xml: HTML numbered 1 with landing-page wording, XML numbered 2', () => {

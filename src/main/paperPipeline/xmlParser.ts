@@ -243,6 +243,12 @@ export function extractTitle(xml: string): string {
   return collectText(title).replace(/\s+/g, ' ').trim();
 }
 
+/** Extract the first DOI exposed by PubMed XML or an embedded citation string. */
+export function extractDoi(xml: string): string {
+  const match = xml.match(/10\.\d{4,9}\/[^\s"<>]+/i);
+  return (match?.[0] ?? '').replace(/[)\].,;:]+$/, '');
+}
+
 function findByKey(root: unknown, key: string): unknown {
   if (typeof root !== 'object' || root === null) return null;
   if (Array.isArray(root)) {

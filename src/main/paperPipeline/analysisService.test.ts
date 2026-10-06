@@ -245,12 +245,12 @@ describe('analysisService (full-text markdown input)', () => {
     ];
     // The md is the primary source; the XML demotes to a supplement.
     expect(input.prompt).toContain(
-      `全文 Markdown（由 PDF/HTML 全文转换而来，本地文件，UTF-8）：${fulltextMdPath} —— 优先阅读`,
+      `全文 Markdown（来源：HTML 公开落地页，本地文件，UTF-8）：${fulltextMdPath} —— 优先阅读`,
     );
     expect(input.prompt).toContain(
       `全文 XML（本地文件，UTF-8，题录与结构化摘要）：${xmlPath} —— 作为补充`,
     );
-    expect(input.prompt).toContain('优先取自全文 Markdown 的结果部分');
+    expect(input.prompt).toContain('若 HTML 只有摘要，不能补写正文数据');
   });
 
   test('runs the LLM path with only a full-text markdown (no cached XML file)', async () => {
